@@ -1,0 +1,28 @@
+﻿# =============================================================
+# requirements.txt — NABDH AI Maintenance Platform v4
+# =============================================================
+
+# ── Web framework ─────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+
+# ── Dashboard ─────────────────────────────────────────────────
+streamlit>=1.32.0
+plotly>=5.20.0
+
+# ── Machine learning ──────────────────────────────────────────
+scikit-learn>=1.4.0
+numpy>=1.26.0
+pandas>=2.2.0
+joblib>=1.3.0
+shap>=0.44.0
+
+# ── Statistics / drift detection ──────────────────────────────
+scipy>=1.12.0
+
+# ── HTTP client (dashboard → API, webhook alerts) ────────────
+requests>=2.31.0
+
+# ── Utilities ────────────────────────────────────────────────
+python-multipart>=0.0.9

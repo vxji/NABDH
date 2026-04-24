@@ -1,0 +1,81 @@
+# =============================================================
+# docker-compose.yml — NABDH AI Maintenance Platform v4
+# Services: api · dashboard
+# =============================================================
+
+version: "3.9"
+
+# ── Shared environment ────────────────────────────────────────
+x-common-env: &common-env
+  API_KEY:              "nabdh-prod-key-2024"
+  DATABASE_PATH:        "/data/nabdh.db"
+  REFERENCE_DATA_PATH:  "/data/reference_data.csv"
+  DRIFT_WINDOW_SIZE:    "500"
+  DRIFT_KS_THRESHOLD:   "0.05"
+  MIN_SAMPLES_DRIFT:    "50"
+  DRIFT_FEATURE_LIMIT:  "3"
+  ALERT_MIN_CONFIDENCE: "0.85"
+  THRESHOLD:            "0.70"
+
+services:
+
+  # ── FastAPI Backend ────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nabdh-api
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      ALLOWED_ORIGINS: "http://localhost:8501,http://dashboard:8501"
+      ALERT_WEBHOOK_URL: ""          # Set to Slack/Teams URL to enable webhooks
+    volumes:
+      - nabdh-data:/data
+      - ./pipeline.pkl:/app/pipeline.pkl:ro
+      - ./expected_columns.pkl:/app/expected_columns.pkl:ro
+      - ./model_version.json:/app/model_version.json:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - nabdh-net
+
+  # ── Streamlit Dashboard ────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: nabdh-dashboard
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: "http://api:8000"
+      API_KEY:     "nabdh-prod-key-2024"
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - nabdh-net
+
+# ── Persistent storage ────────────────────────────────────────
+volumes:
+  nabdh-data:
+    driver: local
+
+# ── Internal network ──────────────────────────────────────────
+networks:
+  nabdh-net:
+    driver: bridge

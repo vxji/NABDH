@@ -1,0 +1,30 @@
+# =============================================================
+# Dockerfile.dashboard — NABDH AI Maintenance (Dashboard)
+# =============================================================
+
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY dashboard.py .
+COPY config.py .
+
+# Streamlit config: disable telemetry, set port
+RUN mkdir -p /root/.streamlit && printf \
+    "[server]\nport = 8501\nheadless = true\nenableCORS = false\n\
+[browser]\ngatherUsageStats = false\n" \
+    > /root/.streamlit/config.toml
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "dashboard.py", "--server.address", "0.0.0.0"]

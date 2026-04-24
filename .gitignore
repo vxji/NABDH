@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Logs
+*.log
+retrain_needed.flag
+
+# OS
+.DS_Store
+desktop.ini
+
+# Claude worktrees
+.claude/
+
+# Personal notes
+MY SYSTEM.md.txt

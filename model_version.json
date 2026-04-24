@@ -1,0 +1,7 @@
+﻿{
+  "version": "1.0.0",
+  "trained_at": "2026-04-11",
+  "description": "RandomForest with median imputation and feature selection",
+  "author": "NABDH AI Team",
+  "threshold": 0.7
+}
