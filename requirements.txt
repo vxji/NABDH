@@ -1,28 +1,39 @@
-﻿# =============================================================
+# =============================================================
 # requirements.txt — NABDH AI Maintenance Platform v4
+# All versions pinned to ensure reproducible deployments
 # =============================================================
 
 # ── Web framework ─────────────────────────────────────────────
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
-pydantic>=2.6.0
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# ── Authentication & Security ─────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-dotenv==1.0.1
+redis==5.0.8
+
+# ── Rate limiting ─────────────────────────────────────────────
+slowapi==0.1.9
+
+# ── Data validation ───────────────────────────────────────────
+pydantic==2.8.2
 
 # ── Dashboard ─────────────────────────────────────────────────
-streamlit>=1.32.0
-plotly>=5.20.0
+streamlit==1.37.0
+plotly==5.23.0
 
 # ── Machine learning ──────────────────────────────────────────
-scikit-learn>=1.4.0
-numpy>=1.26.0
-pandas>=2.2.0
-joblib>=1.3.0
-shap>=0.44.0
+scikit-learn==1.5.1
+numpy==1.26.4
+pandas==2.2.2
+joblib==1.4.2
+shap==0.45.1
 
 # ── Statistics / drift detection ──────────────────────────────
-scipy>=1.12.0
+scipy==1.13.1
 
-# ── HTTP client (dashboard → API, webhook alerts) ────────────
-requests>=2.31.0
-
-# ── Utilities ────────────────────────────────────────────────
-python-multipart>=0.0.9
+# ── HTTP client ───────────────────────────────────────────────
+requests==2.32.3

@@ -1,13 +1,12 @@
 # =============================================================
 # docker-compose.yml — NABDH AI Maintenance Platform v4
-# Services: api · dashboard
+# Services: redis · api · dashboard
 # =============================================================
 
 version: "3.9"
 
 # ── Shared environment ────────────────────────────────────────
 x-common-env: &common-env
-  API_KEY:              "nabdh-prod-key-2024"
   DATABASE_PATH:        "/data/nabdh.db"
   REFERENCE_DATA_PATH:  "/data/reference_data.csv"
   DRIFT_WINDOW_SIZE:    "500"
@@ -19,6 +18,25 @@ x-common-env: &common-env
 
 services:
 
+  # ── Redis token store ──────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: nabdh-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - nabdh-redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - nabdh-net
+
   # ── FastAPI Backend ────────────────────────────────────────
   api:
     build:
@@ -28,7 +46,8 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-env
-      ALLOWED_ORIGINS: "http://localhost:8501,http://dashboard:8501"
+      REDIS_URL:         "redis://redis:6379/0"
+      ALLOWED_ORIGINS:   "http://localhost:8501,http://dashboard:8501"
       ALERT_WEBHOOK_URL: ""          # Set to Slack/Teams URL to enable webhooks
     volumes:
       - nabdh-data:/data
@@ -37,6 +56,9 @@ services:
       - ./model_version.json:/app/model_version.json:ro
     ports:
       - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -55,7 +77,6 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_URL: "http://api:8000"
-      API_KEY:     "nabdh-prod-key-2024"
     ports:
       - "8501:8501"
     depends_on:
@@ -73,6 +94,8 @@ services:
 # ── Persistent storage ────────────────────────────────────────
 volumes:
   nabdh-data:
+    driver: local
+  nabdh-redis-data:
     driver: local
 
 # ── Internal network ──────────────────────────────────────────

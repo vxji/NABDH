@@ -9,18 +9,114 @@ import requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ── Endpoints ────────────────────────────────────────────────
-BACKEND_HOST     = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
-API_URL          = f"{BACKEND_HOST}/predict"
-STATUS_URL       = f"{BACKEND_HOST}/status"
-DRIFT_URL        = f"{BACKEND_HOST}/drift_report"
-HISTORY_URL      = f"{BACKEND_HOST}/history"
-ANALYTICS_URL    = f"{BACKEND_HOST}/analytics"
-ALERTS_URL       = f"{BACKEND_HOST}/alerts"
-API_KEY          = os.getenv("API_KEY", "nabdh-prod-key-2024")
-HEADERS          = {"X-API-Key": API_KEY}
+BACKEND_HOST  = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+LOGIN_URL     = f"{BACKEND_HOST}/auth/login"
+REFRESH_URL   = f"{BACKEND_HOST}/auth/refresh"
+API_URL       = f"{BACKEND_HOST}/predict"
+STATUS_URL    = f"{BACKEND_HOST}/status"
+DRIFT_URL     = f"{BACKEND_HOST}/drift_report"
+HISTORY_URL   = f"{BACKEND_HOST}/history"
+ANALYTICS_URL = f"{BACKEND_HOST}/analytics"
+ALERTS_URL    = f"{BACKEND_HOST}/alerts"
+
+
+def _expire_session() -> None:
+    """Clear all session state and redirect to login with a clean message."""
+    st.session_state.clear()
+    st.session_state["_session_expired"] = True
+    st.rerun()
+
+
+def _auth_headers() -> dict:
+    """Return Bearer auth headers, silently refreshing the access token when < 5 min remain."""
+    token = st.session_state.get("access_token")
+    if not token:
+        _expire_session()
+
+    expires_at = st.session_state.get("token_expires_at")
+    if expires_at and datetime.utcnow() + timedelta(minutes=5) >= expires_at:
+        refresh_token = st.session_state.get("refresh_token")
+        if refresh_token:
+            try:
+                resp = requests.post(
+                    REFRESH_URL,
+                    json    = {"refresh_token": refresh_token},
+                    timeout = 8,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st.session_state["access_token"]     = data["access_token"]
+                    st.session_state["refresh_token"]    = data["refresh_token"]
+                    st.session_state["token_expires_at"] = (
+                        datetime.utcnow() + timedelta(seconds=data.get("expires_in", 3600))
+                    )
+                    token = data["access_token"]
+                else:
+                    _expire_session()
+            except Exception:
+                _expire_session()
+        else:
+            _expire_session()
+
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _on_http_error(e: requests.exceptions.HTTPError) -> None:
+    """Intercept 401 responses and convert them to a clean session-expired redirect."""
+    if e.response is not None and e.response.status_code == 401:
+        _expire_session()
+
+
+def _login_screen() -> None:
+    """Render login form and handle authentication."""
+    st.markdown(
+        '<div style="max-width:380px;margin:80px auto;">'
+        '<div style="font:700 28px/1 Inter,sans-serif;color:#f5f5f7;'
+        'letter-spacing:-0.8px;margin-bottom:6px;">NABDH</div>'
+        '<div style="font:400 13px/1 Inter,sans-serif;color:#86868b;'
+        'margin-bottom:36px;">AI Maintenance Platform</div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+
+    if submitted:
+        try:
+            resp = requests.post(
+                LOGIN_URL,
+                data    = {"username": username, "password": password},
+                timeout = 8,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                st.session_state["access_token"]     = data["access_token"]
+                st.session_state["refresh_token"]    = data["refresh_token"]
+                st.session_state["username"]         = username
+                st.session_state["token_expires_at"] = (
+                    datetime.utcnow() + timedelta(seconds=data.get("expires_in", 3600))
+                )
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+        except requests.exceptions.ConnectionError:
+            st.error("Cannot connect to the API server — make sure it is running on port 8000.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+
+# ── Guard: show login screen if not authenticated ─────────────
+if "access_token" not in st.session_state:
+    if st.session_state.pop("_session_expired", False):
+        st.error("Session expired. Please log in again.")
+    _login_screen()
+
+HEADERS = _auth_headers()
 
 # ── Sensor definitions ────────────────────────────────────────
 SENSORS = {
@@ -701,29 +797,29 @@ def render_rca(rca: dict) -> None:
     primary = rca.get("primary_cause","—")
     mode    = rca.get("failure_mode","—")
     note    = rca.get("inspection_recommendation","")
-    chain   = rca.get("causal_chain",[])
-    ca, cb  = st.columns(2)
-    with ca:
+    raw_chain = rca.get("causal_chain",[])
+    chain = [s.get("narrative", str(s)) if isinstance(s, dict) else str(s) for s in raw_chain]
+
+    st.markdown(
+        f'<div style="background:rgba(255,149,0,0.06);border:1px solid rgba(255,149,0,0.18);'
+        f'border-radius:16px;padding:20px;margin-bottom:10px;">'
+        f'<div style="font:500 10px/1 Inter,sans-serif;color:{_T2};'
+        f'letter-spacing:0.4px;text-transform:uppercase;margin-bottom:10px;">Primary Cause</div>'
+        f'<div style="font:600 14px/1.5 Inter,sans-serif;color:{_ORG};margin-bottom:10px;">{primary}</div>'
+        f'{_pill(mode, _ORG)}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if note:
         st.markdown(
-            f'<div style="background:rgba(255,149,0,0.06);border:1px solid rgba(255,149,0,0.18);'
-            f'border-radius:16px;padding:20px;margin-bottom:10px;">'
+            f'<div style="background:{_SRF};border:1px solid {_BDR};border-radius:14px;padding:16px;margin-bottom:10px;">'
             f'<div style="font:500 10px/1 Inter,sans-serif;color:{_T2};'
-            f'letter-spacing:0.4px;text-transform:uppercase;margin-bottom:10px;">Primary Cause</div>'
-            f'<div style="font:600 14px/1.5 Inter,sans-serif;color:{_ORG};margin-bottom:10px;">{primary}</div>'
-            f'{_pill(mode, _ORG)}'
+            f'letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">Inspection Note</div>'
+            f'<div style="font:400 12px/1.6 Inter,sans-serif;color:{_T2};">{note}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        if note:
-            st.markdown(
-                f'<div style="background:{_SRF};border:1px solid {_BDR};border-radius:14px;padding:16px;">'
-                f'<div style="font:500 10px/1 Inter,sans-serif;color:{_T2};'
-                f'letter-spacing:0.4px;text-transform:uppercase;margin-bottom:8px;">Inspection Note</div>'
-                f'<div style="font:400 12px/1.6 Inter,sans-serif;color:{_T2};">{note}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-    with cb:
+    if chain:
         st.markdown(
             f'<div style="font:500 10px/1 Inter,sans-serif;color:{_T2};'
             f'letter-spacing:0.4px;text-transform:uppercase;margin-bottom:14px;">Causal Chain</div>',
@@ -958,6 +1054,7 @@ with tab_pred:
                 st.error("Cannot connect to backend — is the API server running on port 8000?")
                 st.stop()
             except requests.exceptions.HTTPError as e:
+                _on_http_error(e)
                 st.error(f"API {e.response.status_code}: {e.response.text}")
                 st.stop()
             except Exception as e:
@@ -1082,6 +1179,7 @@ with tab_sys:
                 resp.raise_for_status()
                 st.session_state["status"] = resp.json()
             except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                 st.error(f"Cannot fetch status: {e}")
 
     s = st.session_state.get("status")
@@ -1130,6 +1228,7 @@ with tab_drift:
                 resp.raise_for_status()
                 st.session_state["drift"] = resp.json()
             except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                 st.error(f"Cannot fetch drift report: {e}")
 
     d = st.session_state.get("drift")
@@ -1173,6 +1272,7 @@ with tab_hist:
                 resp.raise_for_status()
                 st.session_state["history"] = resp.json()
             except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                 st.error(f"Cannot fetch history: {e}")
 
     hist = st.session_state.get("history")
@@ -1228,6 +1328,7 @@ with tab_anlt:
                 resp.raise_for_status()
                 st.session_state["analytics"] = resp.json()
             except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                 st.error(f"Cannot fetch analytics: {e}")
 
     an = st.session_state.get("analytics")
@@ -1289,6 +1390,7 @@ with tab_alrt:
                 resp.raise_for_status()
                 st.session_state["alerts"] = resp.json()
             except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                 st.error(f"Cannot fetch alerts: {e}")
 
     al = st.session_state.get("alerts")
@@ -1343,6 +1445,7 @@ with tab_alrt:
                                 st.session_state.pop("alerts",None)
                                 st.rerun()
                             except Exception as e:
+                                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
                                 st.error(f"Failed: {e}")
     else:
         st.markdown(

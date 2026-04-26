@@ -1,30 +1,39 @@
-﻿# =============================================================
+# =============================================================
 # main.py — FastAPI Backend
-# NABDH Predictive Maintenance System v4
+# NABDH AI Maintenance Platform v4
 # =============================================================
 
+import math
 import time
 import uuid
 import logging
-from typing import Optional, List
+import datetime as _dt
+from typing import Annotated, List, Optional
 
-from fastapi import FastAPI, HTTPException, Security, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, ConfigDict
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 import config
 import ml_logic
 import monitoring
 import database
+import auth
+from auth import User, require_viewer, require_operator, require_admin
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
-    level   = logging.INFO,
-    format  = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    level  = logging.INFO,
+    format = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ── Rate limiter ──────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
 
 # ── FastAPI app ───────────────────────────────────────────────
 app = FastAPI(
@@ -35,6 +44,9 @@ app = FastAPI(
     redoc_url   = "/redoc",
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── CORS ──────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -44,14 +56,18 @@ app.add_middleware(
     allow_headers     = ["*"],
 )
 
+# ── Auth router ───────────────────────────────────────────────
+app.include_router(auth.router)
+
+# ── Startup timestamp ─────────────────────────────────────────
+_startup_time = _dt.datetime.now(_dt.timezone.utc)
+
 # ── Audit middleware ──────────────────────────────────────────
 @app.middleware("http")
 async def audit_middleware(request: Request, call_next):
     t_start    = time.perf_counter()
     response   = await call_next(request)
     latency_ms = (time.perf_counter() - t_start) * 1000
-
-    # Non-blocking audit write (fire-and-forget)
     try:
         database.insert_audit(
             method     = request.method,
@@ -63,41 +79,69 @@ async def audit_middleware(request: Request, call_next):
         )
     except Exception:
         pass
-
     return response
 
-# ── API key auth ──────────────────────────────────────────────
-_api_key_header = APIKeyHeader(name=config.API_KEY_NAME, auto_error=True)
-
-def verify_api_key(key: str = Security(_api_key_header)) -> str:
-    if key != config.API_KEY:
-        logger.warning("Rejected request with invalid API key")
-        raise HTTPException(status_code=403, detail="Invalid API key")
-    return key
-
-# ── Startup timestamp ─────────────────────────────────────────
-import datetime as _dt
-_startup_time = _dt.datetime.now(_dt.timezone.utc)
 
 # =============================================================
 # INPUT / OUTPUT SCHEMAS
 # =============================================================
 
 class SensorInput(BaseModel):
-    sensor_1:  Optional[float] = Field(default=None)
-    sensor_2:  Optional[float] = Field(default=None)
-    sensor_3:  Optional[float] = Field(default=None)
-    sensor_4:  Optional[float] = Field(default=None)
-    sensor_5:  Optional[float] = Field(default=None)
-    sensor_6:  Optional[float] = Field(default=None)
-    sensor_7:  Optional[float] = Field(default=None)
-    sensor_8:  Optional[float] = Field(default=None)
-    sensor_9:  Optional[float] = Field(default=None)
-    sensor_10: Optional[float] = Field(default=None)
+    """
+    10 industrial sensor readings.
+    Pass null for any sensor to simulate a missing reading — the imputer handles it.
+    Strict mode prevents string injection; range validators reject physically
+    implausible values (30% margin beyond SENSOR_META bounds).
+    """
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    sensor_1:  Optional[float] = Field(default=None, description="Temperature (°C)")
+    sensor_2:  Optional[float] = Field(default=None, description="Pressure (bar)")
+    sensor_3:  Optional[float] = Field(default=None, description="Humidity (%)")
+    sensor_4:  Optional[float] = Field(default=None, description="RPM")
+    sensor_5:  Optional[float] = Field(default=None, description="Voltage (V)")
+    sensor_6:  Optional[float] = Field(default=None, description="Current (A)")
+    sensor_7:  Optional[float] = Field(default=None, description="Ambient Temp (°C)")
+    sensor_8:  Optional[float] = Field(default=None, description="Frequency (Hz)")
+    sensor_9:  Optional[float] = Field(default=None, description="Pressure 2 (kPa)")
+    sensor_10: Optional[float] = Field(default=None, description="Vibration (mm/s)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_int_to_float(cls, data: dict) -> dict:
+        # JSON sends integers for readings like {"sensor_1": 88}.
+        # Coerce to float before strict-mode validation.
+        if isinstance(data, dict):
+            return {
+                k: float(v) if isinstance(v, int) else v
+                for k, v in data.items()
+            }
+        return data
+
+    @model_validator(mode="after")
+    def _validate_physical_ranges(self) -> "SensorInput":
+        for sensor_id, meta in config.SENSOR_META.items():
+            val = getattr(self, sensor_id)
+            if val is None:
+                continue
+            if math.isnan(val) or math.isinf(val):
+                raise ValueError(f"{sensor_id}: NaN and Infinity are not valid sensor readings.")
+            margin = (meta["max"] - meta["min"]) * 0.3
+            lo, hi = meta["min"] - margin, meta["max"] + margin
+            if not (lo <= val <= hi):
+                raise ValueError(
+                    f"{sensor_id} value {val}{meta['unit']} is outside the plausible "
+                    f"physical range [{meta['min']:.1f}, {meta['max']:.1f}]{meta['unit']}."
+                )
+        return self
 
 
 class BatchInput(BaseModel):
-    records: List[SensorInput] = Field(..., description="Up to 100 sensor records")
+    model_config = ConfigDict(strict=True, extra="forbid")
+    records: Annotated[
+        List[SensorInput],
+        Field(min_length=1, max_length=100, description="Between 1 and 100 sensor records"),
+    ]
 
 
 class PredictionResponse(BaseModel):
@@ -132,30 +176,32 @@ class BatchPredictionResponse(BaseModel):
 
 
 # =============================================================
-# HEALTH
+# HEALTH — public, no auth, no rate limit
 # =============================================================
 
 @app.get("/health", tags=["System"])
 async def health():
-    """Health check — used by Docker HEALTHCHECK and load balancers."""
     return {"status": "ok", "version": config.APP_VERSION}
 
 
 # =============================================================
-# SYSTEM STATUS
+# SYSTEM STATUS — admin only
 # =============================================================
 
 @app.get("/status", tags=["System"])
-async def status(api_key: str = Security(verify_api_key)):
-    """Full system health, model info, drift status, and uptime."""
+@limiter.limit(config.RATE_LIMIT)
+async def status(
+    request:      Request,
+    current_user: User = require_admin,
+):
     summary = monitoring.get_performance_summary()
     drift   = monitoring.get_drift_report()
     uptime  = int((_dt.datetime.now(_dt.timezone.utc) - _startup_time).total_seconds())
     return {
-        "api_status":       "ok",
-        "model_version":    ml_logic.MODEL_VERSION,
-        "app_version":      config.APP_VERSION,
-        "uptime_seconds":   uptime,
+        "api_status":        "ok",
+        "model_version":     ml_logic.MODEL_VERSION,
+        "app_version":       config.APP_VERSION,
+        "uptime_seconds":    uptime,
         "total_predictions": summary.get("total_predictions", 0),
         "failure_rate":      summary.get("failure_rate", 0.0),
         "avg_latency_ms":    summary.get("avg_latency_ms", 0.0),
@@ -163,44 +209,45 @@ async def status(api_key: str = Security(verify_api_key)):
         "drift_detected":    len(drift.get("drifted_features", [])) > 0,
         "drifted_features":  drift.get("drifted_features", []),
         "db_records":        database.count_predictions(),
+        "operator":          current_user.username,
     }
 
 
 @app.get("/metrics", tags=["System"])
-async def metrics(api_key: str = Security(verify_api_key)):
-    """Rolling-window performance metrics."""
+@limiter.limit(config.RATE_LIMIT)
+async def metrics(
+    request:      Request,
+    current_user: User = require_admin,
+):
     return monitoring.get_performance_summary()
 
 
 # =============================================================
-# PREDICTION
+# PREDICTION — operator + admin
 # =============================================================
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
+@limiter.limit("30/minute")  # stricter limit on compute-heavy endpoint
 async def predict(
+    request:      Request,
     sensor_input: SensorInput,
-    api_key: str = Security(verify_api_key),
+    current_user: User = require_operator,
 ) -> PredictionResponse:
-    """
-    Single-record prediction.
-    Returns enriched decision report: severity, RCA, prescriptive actions, health score.
-    """
     t_start    = time.perf_counter()
     request_id = str(uuid.uuid4())
     input_data = sensor_input.model_dump()
 
     try:
         result = ml_logic.predict(input_data)
-    except AssertionError as e:
-        logger.error("[%s] Pipeline assertion: %s", request_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        logger.error("[%s] Prediction error: %s", request_id, e)
-        raise HTTPException(status_code=500, detail="Prediction pipeline failed")
+    except AssertionError as exc:
+        logger.error("[%s] Pipeline assertion: %s", request_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        logger.error("[%s] Prediction error: %s", request_id, exc)
+        raise HTTPException(status_code=500, detail="Prediction pipeline failed.")
 
     latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
 
-    # Persist prediction
     monitoring.log_prediction(
         request_id    = request_id,
         input_data    = input_data,
@@ -217,17 +264,15 @@ async def predict(
         anomalies     = result["sensor_anomalies"],
     )
 
-    # Persist alert if triggered
     if result["alert"]:
         monitoring.log_alert(
-            request_id  = request_id,
-            severity    = result["severity"],
-            confidence  = result["confidence"],
-            message     = result["alert_message"],
-            input_data  = input_data,
+            request_id = request_id,
+            severity   = result["severity"],
+            confidence = result["confidence"],
+            message    = result["alert_message"],
+            input_data = input_data,
         )
 
-    # Persist prescriptive actions
     if result["prescriptive_actions"]:
         database.insert_prescriptive(
             request_id   = request_id,
@@ -236,7 +281,6 @@ async def predict(
             priority     = result["maintenance_priority"],
         )
 
-    # Persist RCA
     if result["rca"] and result["rca"].get("causal_chain"):
         database.insert_rca(
             request_id    = request_id,
@@ -275,14 +319,12 @@ async def predict(
 
 
 @app.post("/predict_batch", response_model=BatchPredictionResponse, tags=["Prediction"])
+@limiter.limit("10/minute")  # batch is expensive — tighter limit
 async def predict_batch(
+    request:     Request,
     batch_input: BatchInput,
-    api_key: str = Security(verify_api_key),
+    current_user: User = require_operator,
 ) -> BatchPredictionResponse:
-    """Batch prediction — up to 100 records per call."""
-    if len(batch_input.records) > 100:
-        raise HTTPException(status_code=422, detail="Batch size exceeds maximum of 100")
-
     t_start  = time.perf_counter()
     results  = []
     failures = 0
@@ -294,9 +336,9 @@ async def predict_batch(
             results.append(r)
             if r["prediction"] == 1:
                 failures += 1
-        except Exception as e:
-            logger.error("Batch record error: %s", e)
-            results.append({"error": str(e)})
+        except Exception as exc:
+            logger.error("Batch record error: %s", exc)
+            results.append({"error": str(exc)})
 
     return BatchPredictionResponse(
         results            = results,
@@ -307,108 +349,101 @@ async def predict_batch(
 
 
 # =============================================================
-# HISTORY & ANALYTICS
+# HISTORY & ANALYTICS — viewer + above
 # =============================================================
 
 @app.get("/history", tags=["Analytics"])
+@limiter.limit(config.RATE_LIMIT)
 async def history(
-    limit:    int = Query(default=100, ge=1, le=500),
-    offset:   int = Query(default=0,   ge=0),
-    severity: Optional[str] = Query(default=None, pattern="^(HIGH|MEDIUM|LOW|NONE)$"),
-    api_key:  str = Security(verify_api_key),
+    request:      Request,
+    limit:        int          = Query(default=100, ge=1, le=500),
+    offset:       int          = Query(default=0,   ge=0),
+    severity:     Optional[str]= Query(default=None, pattern="^(HIGH|MEDIUM|LOW|NONE)$"),
+    current_user: User         = require_viewer,
 ):
-    """
-    Paginated prediction history from persistent storage.
-    Filter by severity: HIGH | MEDIUM | LOW | NONE.
-    """
     records = monitoring.get_history(limit=limit, offset=offset, severity=severity)
-    return {
-        "records": records,
-        "count":   len(records),
-        "limit":   limit,
-        "offset":  offset,
-    }
+    return {"records": records, "count": len(records), "limit": limit, "offset": offset}
 
 
 @app.get("/analytics", tags=["Analytics"])
+@limiter.limit(config.RATE_LIMIT)
 async def analytics(
-    hours:   int = Query(default=24, ge=1, le=168),
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    hours:        int  = Query(default=24, ge=1, le=168),
+    current_user: User = require_viewer,
 ):
-    """Aggregated analytics for the last N hours (max 7 days)."""
     return monitoring.get_analytics(hours=hours)
 
 
 @app.get("/drift_report", tags=["Analytics"])
-async def drift_report(api_key: str = Security(verify_api_key)):
-    """Latest feature-level drift detection report."""
+@limiter.limit(config.RATE_LIMIT)
+async def drift_report(
+    request:      Request,
+    current_user: User = require_viewer,
+):
     return monitoring.get_drift_report()
 
 
 @app.get("/drift_history", tags=["Analytics"])
+@limiter.limit(config.RATE_LIMIT)
 async def drift_history(
-    limit:   int = Query(default=20, ge=1, le=100),
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    limit:        int  = Query(default=20, ge=1, le=100),
+    current_user: User = require_viewer,
 ):
-    """Historical drift check results."""
     return {"records": monitoring.get_drift_history(limit=limit)}
 
 
 # =============================================================
-# ROOT CAUSE ANALYSIS
+# ROOT CAUSE ANALYSIS — operator + above
 # =============================================================
 
 @app.get("/rca/{request_id}", tags=["Explainability"])
+@limiter.limit(config.RATE_LIMIT)
 async def get_rca(
-    request_id: str,
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    request_id:   str,
+    current_user: User = require_operator,
 ):
-    """
-    Root Cause Analysis for a specific prediction.
-    Returns causal chain, failure mode description, and inspection recommendation.
-    """
     record = database.get_prediction_by_id(request_id)
     if not record:
-        raise HTTPException(status_code=404, detail=f"Prediction {request_id} not found")
+        raise HTTPException(status_code=404, detail=f"Prediction {request_id} not found.")
 
     rca = database.get_rca(request_id)
     if rca:
         return rca
 
-    # Recompute on-the-fly if not stored (backward compat)
-    shap_dict   = record.get("shap_values", {})
-    sensor_data = record.get("sensor_data", {})
-    failure_mode= record.get("failure_mode", "UNKNOWN")
-    confidence  = record.get("confidence", 0.0)
+    shap_dict    = record.get("shap_values", {})
+    sensor_data  = record.get("sensor_data", {})
+    failure_mode = record.get("failure_mode", "UNKNOWN")
+    confidence   = record.get("confidence", 0.0)
     return ml_logic.root_cause_analysis(shap_dict, sensor_data, confidence, failure_mode)
 
 
 # =============================================================
-# PRESCRIPTIVE MAINTENANCE
+# PRESCRIPTIVE MAINTENANCE — operator + above
 # =============================================================
 
 @app.get("/prescriptive", tags=["Prescriptive"])
+@limiter.limit(config.RATE_LIMIT)
 async def prescriptive_history(
-    limit:   int = Query(default=20, ge=1, le=100),
-    status:  Optional[str] = Query(default=None),
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    limit:        int  = Query(default=20, ge=1, le=100),
+    current_user: User = require_operator,
 ):
-    """History of prescriptive maintenance recommendations."""
     return {"records": monitoring.get_prescriptive_history(limit=limit)}
 
 
 @app.get("/prescriptive/{request_id}", tags=["Prescriptive"])
+@limiter.limit(config.RATE_LIMIT)
 async def get_prescriptive(
-    request_id: str,
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    request_id:   str,
+    current_user: User = require_operator,
 ):
-    """
-    Prescriptive maintenance actions for a specific prediction.
-    Recomputes from stored sensor data if needed.
-    """
     record = database.get_prediction_by_id(request_id)
     if not record:
-        raise HTTPException(status_code=404, detail=f"Prediction {request_id} not found")
+        raise HTTPException(status_code=404, detail=f"Prediction {request_id} not found.")
 
     sensor_data  = record.get("sensor_data", {})
     failure_mode = record.get("failure_mode", "UNKNOWN")
@@ -424,39 +459,64 @@ async def get_prescriptive(
 
 
 # =============================================================
-# ALERTS
+# ALERTS — viewer (read) / operator (acknowledge)
 # =============================================================
 
 @app.get("/alerts", tags=["Alerts"])
+@limiter.limit(config.RATE_LIMIT)
 async def get_alerts(
-    limit:      int  = Query(default=50, ge=1, le=200),
-    unack_only: bool = Query(default=False),
-    api_key:    str  = Security(verify_api_key),
+    request:      Request,
+    limit:        int  = Query(default=50, ge=1, le=200),
+    unack_only:   bool = Query(default=False),
+    current_user: User = require_viewer,
 ):
-    """Alert history. Set unack_only=true to see only unacknowledged alerts."""
     return {"alerts": monitoring.get_alert_history(limit=limit, unack_only=unack_only)}
 
 
 @app.post("/alerts/{alert_id}/acknowledge", tags=["Alerts"])
+@limiter.limit(config.RATE_LIMIT)
 async def ack_alert(
-    alert_id: int,
-    api_key:  str = Security(verify_api_key),
+    request:      Request,
+    alert_id:     int,
+    current_user: User = require_operator,
 ):
-    """Acknowledge an alert by ID."""
     ok = database.acknowledge_alert(alert_id)
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found.")
+    logger.info("Alert #%d acknowledged by '%s'", alert_id, current_user.username)
     return {"status": "acknowledged", "alert_id": alert_id}
 
 
 # =============================================================
-# AUDIT LOG
+# AUDIT LOG — admin only
 # =============================================================
 
 @app.get("/audit", tags=["Audit"])
+@limiter.limit(config.RATE_LIMIT)
 async def audit_log(
-    limit:  int = Query(default=200, ge=1, le=1000),
-    api_key: str = Security(verify_api_key),
+    request:      Request,
+    limit:        int  = Query(default=200, ge=1, le=1000),
+    current_user: User = require_admin,
 ):
-    """Full API audit log — every request recorded."""
     return {"records": monitoring.get_audit_log(limit=limit)}
+
+
+@app.get("/audit/security", tags=["Audit"])
+@limiter.limit(config.RATE_LIMIT)
+async def security_audit_log(
+    request:      Request,
+    limit:        int           = Query(default=100, ge=1, le=500),
+    offset:       int           = Query(default=0,   ge=0),
+    event_type:   Optional[str] = Query(default=None, description="e.g. login_failure, token_reuse, unauthorized"),
+    severity:     Optional[str] = Query(default=None, pattern="^(INFO|WARNING|CRITICAL)$"),
+    username:     Optional[str] = Query(default=None),
+    current_user: User          = require_admin,
+):
+    records = database.get_security_events(
+        limit      = limit,
+        offset     = offset,
+        event_type = event_type,
+        severity   = severity,
+        username   = username,
+    )
+    return {"records": records, "count": len(records), "limit": limit, "offset": offset}
