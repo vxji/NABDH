@@ -40,6 +40,15 @@ if not exist "model_version.json" (
     )
 )
 
+REM ── Apply DB migrations (activity_logs, permissions, etc.) ────
+echo [DB] Applying Alembic migrations...
+python -m alembic upgrade head
+if errorlevel 1 (
+    echo [ERROR] Migration failed. Check alembic output above.
+    pause
+    exit /b 1
+)
+
 REM ── Start FastAPI Backend ─────────────────────────────────────
 echo [API] Starting FastAPI backend on port 8000...
 start "NABDH API" cmd /k "python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"

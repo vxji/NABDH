@@ -484,6 +484,62 @@ require_admin    = Depends(require_role(UserRole.ADMIN))
 
 
 # =============================================================
+# EXTENSIBLE PERMISSIONS
+# Fine-grained capabilities backed by the `permissions` /
+# `role_permissions` tables, additive to (not a replacement for) the
+# role hierarchy above. Existing endpoints keep using require_role/
+# require_viewer/etc. unchanged; new capability-gated behavior uses
+# require_permission() instead of hardcoding `role == "admin"` checks.
+# =============================================================
+
+_permission_cache: dict[str, set[str]] = {}
+
+
+def reload_permissions() -> None:
+    """(Re)loads the role -> permission-set mapping from the DB into memory.
+    Called once at import time, and exposed via POST /permissions/reload so
+    an admin can pick up new grants without restarting the process."""
+    global _permission_cache
+    raw = database.get_role_permissions()
+    _permission_cache = {role: set(keys) for role, keys in raw.items()}
+
+
+try:
+    reload_permissions()
+except Exception as exc:  # pragma: no cover - DB not migrated yet
+    logger.warning("Could not load role_permissions at startup: %s", exc)
+
+
+def has_permission(user: User, permission_key: str) -> bool:
+    return permission_key in _permission_cache.get(user.role.value, set())
+
+
+def require_permission(permission_key: str):
+    """Returns a FastAPI dependency that enforces a specific permission key."""
+    def _check(
+        request:      Request,
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if not has_permission(current_user, permission_key):
+            _log_event(
+                event_type = "unauthorized",
+                severity   = "WARNING",
+                request    = request,
+                username   = current_user.username,
+                detail     = {
+                    "reason":   f"Missing permission '{permission_key}'",
+                    "endpoint": str(request.url.path),
+                },
+            )
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail      = f"Access denied. Missing required permission: '{permission_key}'.",
+            )
+        return current_user
+    return _check
+
+
+# =============================================================
 # AUTH ROUTER
 # =============================================================
 

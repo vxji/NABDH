@@ -610,3 +610,29 @@ async def put_notification_settings(
         config   = body.config,
     )
     return {"status": "saved", "channel": body.channel, "enabled": body.enabled}
+
+
+# =============================================================
+# PERMISSIONS — extensible authorization, additive to require_role
+# =============================================================
+
+@app.get("/permissions", tags=["Permissions"])
+@limiter.limit(config.RATE_LIMIT)
+async def list_permissions(
+    request:      Request,
+    current_user: User = Depends(auth.require_permission("manage_permissions")),
+):
+    return {
+        "permissions":      database.get_all_permissions(),
+        "role_permissions": database.get_role_permissions(),
+    }
+
+
+@app.post("/permissions/reload", tags=["Permissions"])
+@limiter.limit(config.RATE_LIMIT)
+async def reload_permissions(
+    request:      Request,
+    current_user: User = Depends(auth.require_permission("manage_permissions")),
+):
+    auth.reload_permissions()
+    return {"status": "reloaded", "role_permissions": database.get_role_permissions()}

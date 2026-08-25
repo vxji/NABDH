@@ -13,6 +13,10 @@ if [ ! -f "pipeline.pkl" ] || [ ! -f "expected_columns.pkl" ] || [ ! -f "model_v
     echo "[TRAIN] Done."
 fi
 
+# ── Apply DB migrations (activity_logs, permissions, etc.) ────
+echo "[DB] Applying Alembic migrations..."
+alembic upgrade head
+
 # ── Start FastAPI backend ─────────────────────────────────────
 echo "[API] Starting FastAPI on port 8000..."
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 &

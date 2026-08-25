@@ -677,6 +677,28 @@ def get_all_enabled_notification_settings() -> list[dict]:
         conn.close()
 
 
+def get_role_permissions() -> dict[str, list[str]]:
+    """Returns {role: [permission_key, ...]} for every role that has grants."""
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT role, permission_key FROM role_permissions").fetchall()
+        result: dict[str, list[str]] = {}
+        for r in rows:
+            result.setdefault(r["role"], []).append(r["permission_key"])
+        return result
+    finally:
+        conn.close()
+
+
+def get_all_permissions() -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT key, description FROM permissions ORDER BY key").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_security_events(
     limit:      int            = 100,
     offset:     int            = 0,
