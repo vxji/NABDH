@@ -529,6 +529,82 @@ def insert_security_event(
             conn.close()
 
 
+def set_session_context(username: Optional[str]) -> None:
+    """
+    Records the current request's user so DB-level triggers can attribute
+    activity_log rows to a human.
+
+    SQLite (dev only): best-effort — writes to a single-row `_session_context`
+    table that the activity_logs triggers read from. This is a global, not a
+    per-connection, value; under concurrent SQLite requests the attribution
+    can race. That's acceptable here because SQLite is documented as local
+    dev only — the enforced, race-free mechanism is Postgres's per-transaction
+    `SET LOCAL app.username`, wired up when the SQLAlchemy/Postgres backend
+    lands.
+    """
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "UPDATE _session_context SET username = ? WHERE id = 1", (username,)
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # _session_context not present (e.g. migrations not yet applied)
+        finally:
+            conn.close()
+
+
+# ── Activity log (append-only, DB-trigger populated) ─────────────
+
+def get_activity_logs(
+    limit:        int            = 100,
+    offset:       int            = 0,
+    username:     Optional[str]  = None,
+    operation:    Optional[str]  = None,
+    table_name:   Optional[str]  = None,
+    start_date:   Optional[str]  = None,
+    end_date:     Optional[str]  = None,
+) -> list[dict]:
+    conditions = []
+    params: list = []
+    if username:
+        conditions.append("changed_by = ?")
+        params.append(username)
+    if operation:
+        conditions.append("operation = ?")
+        params.append(operation.upper())
+    if table_name:
+        conditions.append("table_name = ?")
+        params.append(table_name)
+    if start_date:
+        conditions.append("changed_at >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("changed_at <= ?")
+        params.append(end_date)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql   = f"SELECT * FROM activity_logs {where} ORDER BY changed_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    conn = _connect()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            for field in ("old_data", "new_data"):
+                try:
+                    d[field] = json.loads(d[field]) if d[field] else None
+                except Exception:
+                    d[field] = None
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
 def get_security_events(
     limit:      int            = 100,
     offset:     int            = 0,

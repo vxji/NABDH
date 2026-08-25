@@ -520,3 +520,34 @@ async def security_audit_log(
         username   = username,
     )
     return {"records": records, "count": len(records), "limit": limit, "offset": offset}
+
+
+@app.get("/audit/immutable-log", tags=["Audit"])
+@limiter.limit(config.RATE_LIMIT)
+async def immutable_activity_log(
+    request:      Request,
+    limit:        int           = Query(default=100, ge=1, le=1000),
+    offset:       int           = Query(default=0,   ge=0),
+    username:     Optional[str] = Query(default=None, description="Filter by the user who made the change"),
+    operation:    Optional[str] = Query(default=None, pattern="^(INSERT|UPDATE|DELETE)$"),
+    table_name:   Optional[str] = Query(default=None, description="e.g. predictions, alerts"),
+    start_date:   Optional[str] = Query(default=None, description="ISO timestamp lower bound"),
+    end_date:     Optional[str] = Query(default=None, description="ISO timestamp upper bound"),
+    current_user: User          = require_admin,
+):
+    """
+    Append-only activity trail populated by database triggers (not application
+    code) on INSERT/UPDATE/DELETE of predictions/alerts. On PostgreSQL, UPDATE
+    and DELETE are REVOKEd on this table at the database level, so even a
+    buggy or compromised backend cannot alter or erase these records.
+    """
+    records = database.get_activity_logs(
+        limit      = limit,
+        offset     = offset,
+        username   = username,
+        operation  = operation,
+        table_name = table_name,
+        start_date = start_date,
+        end_date   = end_date,
+    )
+    return {"records": records, "count": len(records), "limit": limit, "offset": offset}
