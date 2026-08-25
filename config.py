@@ -84,6 +84,22 @@ FAILURE_MODE_SENSORS = {
     "ENVIRONMENTAL_STRESS":["sensor_3"],
 }
 
+# ── Notifications (v4.2.0) ──────────────────────────────────────
+SMTP_HOST         = os.getenv("SMTP_HOST", "")
+SMTP_PORT         = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME     = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD     = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_ADDRESS = os.getenv("SMTP_FROM_ADDRESS", "nabdh-alerts@localhost")
+SMTP_USE_TLS      = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
+SLACK_DEFAULT_WEBHOOK_URL        = os.getenv("SLACK_DEFAULT_WEBHOOK_URL", "")
+CUSTOM_NOTIFICATION_WEBHOOK_URL  = os.getenv("CUSTOM_NOTIFICATION_WEBHOOK_URL", "")
+
+# Proactive maintenance scheduling — fires *before* ALERT_MIN_CONFIDENCE is
+# crossed, distinct from the existing reactive alert path in monitoring.py.
+PROACTIVE_HEALTH_THRESHOLD = float(os.getenv("PROACTIVE_HEALTH_THRESHOLD", "35.0"))
+PROACTIVE_CHECK_CRON       = os.getenv("PROACTIVE_CHECK_CRON", "0 6 * * *")  # daily 06:00
+
 # ── App metadata ──────────────────────────────────────────────
-APP_VERSION = "4.1.0"
+APP_VERSION = "4.2.0"
 APP_NAME    = "NABDH AI Maintenance Platform"

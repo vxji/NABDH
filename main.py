@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field, model_validator, ConfigDict
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 import config
 import ml_logic
@@ -24,6 +26,7 @@ import monitoring
 import database
 import auth
 from auth import User, require_viewer, require_operator, require_admin
+from services.notifications import proactive_check
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +64,26 @@ app.include_router(auth.router)
 
 # ── Startup timestamp ─────────────────────────────────────────
 _startup_time = _dt.datetime.now(_dt.timezone.utc)
+
+# ── Proactive maintenance scheduler ────────────────────────────
+_scheduler = BackgroundScheduler()
+
+
+@app.on_event("startup")
+def _start_scheduler():
+    _scheduler.add_job(
+        proactive_check.run_daily_check,
+        CronTrigger.from_crontab(config.PROACTIVE_CHECK_CRON),
+        id             = "proactive_maintenance_check",
+        replace_existing = True,
+    )
+    _scheduler.start()
+    logger.info("Proactive maintenance scheduler started (cron: %s)", config.PROACTIVE_CHECK_CRON)
+
+
+@app.on_event("shutdown")
+def _stop_scheduler():
+    _scheduler.shutdown(wait=False)
 
 # ── Audit middleware ──────────────────────────────────────────
 @app.middleware("http")
@@ -166,6 +189,13 @@ class PredictionResponse(BaseModel):
     model_version:           str
     latency_ms:              float
     shap_values:             dict
+
+
+class NotificationSettingUpdate(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    channel: str  = Field(pattern="^(email|slack|webhook)$")
+    enabled: bool = True
+    config:  dict = Field(default_factory=dict, description="e.g. {'email_address': '...'} or {'webhook_url': '...'}")
 
 
 class BatchPredictionResponse(BaseModel):
@@ -551,3 +581,32 @@ async def immutable_activity_log(
         end_date   = end_date,
     )
     return {"records": records, "count": len(records), "limit": limit, "offset": offset}
+
+
+# =============================================================
+# NOTIFICATIONS — any authenticated user manages their own settings
+# =============================================================
+
+@app.get("/notifications/settings", tags=["Notifications"])
+@limiter.limit(config.RATE_LIMIT)
+async def get_notification_settings(
+    request:      Request,
+    current_user: User = require_viewer,
+):
+    return {"settings": database.get_notification_settings(current_user.username)}
+
+
+@app.put("/notifications/settings", tags=["Notifications"])
+@limiter.limit(config.RATE_LIMIT)
+async def put_notification_settings(
+    request:      Request,
+    body:         NotificationSettingUpdate,
+    current_user: User = require_viewer,
+):
+    database.upsert_notification_setting(
+        username = current_user.username,
+        channel  = body.channel,
+        enabled  = body.enabled,
+        config   = body.config,
+    )
+    return {"status": "saved", "channel": body.channel, "enabled": body.enabled}

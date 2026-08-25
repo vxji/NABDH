@@ -605,6 +605,78 @@ def get_activity_logs(
         conn.close()
 
 
+def get_notification_settings(username: str) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM notification_settings WHERE username = ? ORDER BY channel", (username,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d["enabled"])
+            try:
+                d["config"] = json.loads(d["config"]) if d["config"] else {}
+            except Exception:
+                d["config"] = {}
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+def upsert_notification_setting(
+    username: str,
+    channel:  str,
+    enabled:  bool,
+    config:   Optional[dict] = None,
+) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = _connect()
+        try:
+            existing = conn.execute(
+                "SELECT id FROM notification_settings WHERE username = ? AND channel = ?",
+                (username, channel),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE notification_settings SET enabled = ?, config = ? WHERE id = ?",
+                    (int(enabled), json.dumps(config or {}), existing["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO notification_settings (username, channel, enabled, config, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (username, channel, int(enabled), json.dumps(config or {}), ts),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_all_enabled_notification_settings() -> list[dict]:
+    """Used by the proactive maintenance scheduler to fan out to every user
+    who has at least one enabled notification channel."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM notification_settings WHERE enabled = 1"
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d["enabled"])
+            try:
+                d["config"] = json.loads(d["config"]) if d["config"] else {}
+            except Exception:
+                d["config"] = {}
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
 def get_security_events(
     limit:      int            = 100,
     offset:     int            = 0,
