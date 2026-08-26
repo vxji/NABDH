@@ -995,6 +995,36 @@ def add_user_equipment_scope(username: str, equipment_id: int) -> None:
             conn.close()
 
 
+def insert_report(request_id: str, file_path: str) -> None:
+    conflict_clause = (
+        "ON CONFLICT (request_id) DO UPDATE SET file_path = excluded.file_path, generated_at = excluded.generated_at"
+        if is_postgres() else ""
+    )
+    insert_verb = "INSERT" if is_postgres() else "INSERT OR REPLACE"
+    sql = f"""
+    {insert_verb} INTO reports (request_id, file_path, generated_at)
+    VALUES (?, ?, ?)
+    {conflict_clause}
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(sql, (request_id, file_path, ts))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_report(request_id: str) -> Optional[dict]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT * FROM reports WHERE request_id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def remove_user_equipment_scope(username: str, equipment_id: int) -> bool:
     with _lock:
         conn = _connect()

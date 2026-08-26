@@ -4,15 +4,16 @@
 # =============================================================
 
 import math
+import os
 import time
 import uuid
 import logging
 import datetime as _dt
 from typing import Annotated, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Query, Depends
+from fastapi import FastAPI, HTTPException, Request, Query, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field, model_validator, ConfigDict
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -26,8 +27,9 @@ import monitoring
 import database
 import auth
 import timeline
+import reports
 from auth import User, require_viewer, require_operator, require_admin
-from services.notifications import proactive_check
+from services.notifications import proactive_check, dispatcher
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -268,12 +270,41 @@ async def metrics(
 # PREDICTION — operator + admin
 # =============================================================
 
+async def _generate_report_and_notify(prediction_data: dict, alert: bool, alert_message: str) -> None:
+    """
+    Background task run after /predict's response is already sent: builds
+    the PDF report and records it (GET /predict/{id}/report reads from
+    there), then — only for a critical reactive alert — dispatches a
+    notification with the PDF attached via §4's multi-channel dispatcher.
+    """
+    request_id = prediction_data.get("request_id", "unknown")
+    pdf_bytes = None
+    try:
+        pdf_bytes = reports.generate_prediction_report(prediction_data)
+        file_path = reports.save_report(request_id, pdf_bytes)
+        database.insert_report(request_id, file_path)
+    except Exception as exc:
+        logger.warning("[%s] Report generation failed: %s", request_id, exc)
+
+    if alert and pdf_bytes:
+        try:
+            await dispatcher.notify_all_enabled(
+                subject             = "NABDH — Critical Alert Report",
+                body                = alert_message or "A critical failure alert was triggered.",
+                attachment          = pdf_bytes,
+                attachment_filename = f"{request_id}.pdf",
+            )
+        except Exception as exc:
+            logger.warning("[%s] Critical alert notification failed: %s", request_id, exc)
+
+
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 @limiter.limit("30/minute")  # stricter limit on compute-heavy endpoint
 async def predict(
-    request:      Request,
-    sensor_input: SensorInput,
-    current_user: User = require_operator,
+    request:          Request,
+    sensor_input:     SensorInput,
+    background_tasks: BackgroundTasks,
+    current_user:     User = require_operator,
 ) -> PredictionResponse:
     t_start    = time.perf_counter()
     request_id = str(uuid.uuid4())
@@ -335,7 +366,7 @@ async def predict(
     if latency_ms > 100:
         logger.warning("[%s] High latency: %.1fms", request_id, latency_ms)
 
-    return PredictionResponse(
+    response = PredictionResponse(
         request_id            = request_id,
         prediction            = result["prediction"],
         confidence            = result["confidence"],
@@ -358,6 +389,16 @@ async def predict(
         latency_ms            = latency_ms,
         shap_values           = result["shap_values"],
     )
+
+    # Runs after the response above is sent — doesn't add latency to /predict.
+    background_tasks.add_task(
+        _generate_report_and_notify,
+        response.model_dump(),
+        result["alert"],
+        result["alert_message"],
+    )
+
+    return response
 
 
 @app.post("/predict_batch", response_model=BatchPredictionResponse, tags=["Prediction"])
@@ -387,6 +428,29 @@ async def predict_batch(
         total_records      = len(batch_input.records),
         failures_detected  = failures,
         processing_time_ms = round((time.perf_counter() - t_start) * 1000, 2),
+    )
+
+
+@app.get("/predict/{prediction_id}/report", tags=["Prediction"])
+@limiter.limit(config.RATE_LIMIT)
+async def download_prediction_report(
+    request:       Request,
+    prediction_id: str,
+    current_user:  User = require_operator,
+):
+    """Downloads the PDF generated automatically after POST /predict. 404
+    if the prediction doesn't exist or its report hasn't finished generating
+    yet (it's produced by a background task, shortly after /predict returns)."""
+    report = database.get_report(prediction_id)
+    if not report or not os.path.exists(report["file_path"]):
+        raise HTTPException(
+            status_code = 404,
+            detail      = f"Report for {prediction_id} not found or not yet generated.",
+        )
+    return FileResponse(
+        report["file_path"],
+        media_type = "application/pdf",
+        filename   = f"{prediction_id}.pdf",
     )
 
 

@@ -55,12 +55,21 @@ async def notify_user(
     return results
 
 
-async def notify_all_enabled(subject: str, body: str) -> dict:
-    """Used by the proactive maintenance scheduler — every user with at least
-    one enabled channel gets notified. Returns {username: {channel: bool}}."""
+async def notify_all_enabled(
+    subject:              str,
+    body:                 str,
+    attachment:           Optional[bytes] = None,
+    attachment_filename:  Optional[str]   = None,
+) -> dict:
+    """Fans out to every user with at least one enabled channel. Used by the
+    proactive maintenance scheduler, and by §6's critical-alert path (with a
+    PDF report attached). Returns {username: {channel: bool}}."""
     rows = database.get_all_enabled_notification_settings()
     usernames = sorted({r["username"] for r in rows})
     results = {}
     for username in usernames:
-        results[username] = await notify_user(username, subject, body)
+        results[username] = await notify_user(
+            username, subject, body,
+            attachment=attachment, attachment_filename=attachment_filename,
+        )
     return results

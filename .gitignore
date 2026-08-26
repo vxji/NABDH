@@ -10,6 +10,9 @@ __pycache__/
 *.log
 retrain_needed.flag
 
+# Generated PDF reports (v4.2.0)
+reports/
+
 # OS
 .DS_Store
 desktop.ini
