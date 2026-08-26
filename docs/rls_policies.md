@@ -47,13 +47,22 @@ gotcha below). Three permissive policies (Postgres OR's them together):
 |---|---|---|
 | `{table}_admin_policy` | admin | `current_setting('app.user_role', true) = 'admin'` — sees everything |
 | `{table}_operator_policy` | operator | `current_setting('app.user_role', true) = 'operator'` — sees everything (matches today's app behavior; operators aren't equipment-scoped) |
-| `{table}_viewer_policy` | viewer | `role = 'viewer' AND (equipment_id IS NULL OR equipment_id IN (SELECT equipment_id FROM user_equipment_scope WHERE username = current_setting('app.username', true)))` |
+| `{table}_viewer_policy` | viewer | `role = 'viewer' AND (equipment_id IS NULL OR equipment_id = 1 OR equipment_id IN (SELECT equipment_id FROM user_equipment_scope WHERE username = current_setting('app.username', true)))` |
 
-The `equipment_id IS NULL` clause is what keeps single-equipment
-deployments unaffected — nothing before this migration has an
-`equipment_id` set to anything but `1` (backfilled), but rows can be `NULL`
-in a hand-rolled insert; either way, a viewer with no explicit grants still
-sees the default equipment's data exactly as before.
+`equipment_id = 1` (the seeded "Default Unit", guaranteed to exist) and
+`equipment_id IS NULL` are both treated as globally visible — that's what
+keeps single-equipment deployments unaffected. Equipment id > 1 requires an
+explicit `user_equipment_scope` grant.
+
+> **Corrected in migration `0006`.** The original `0004` policy only
+> exempted `NULL`, on the assumption pre-existing rows would be left
+> unscoped. But `0004`'s own backfill set every row's `equipment_id` to `1`
+> (never `NULL`), and `insert_prediction()`'s default does the same for new
+> rows — so in practice no row was ever actually `NULL`, and every existing
+> viewer account would have seen **zero** rows on Postgres until explicitly
+> granted equipment 1. `0006` fixes this by also exempting `equipment_id = 1`.
+> Caught while building §5 (equipment timeline), before this was ever
+> deployed to a real Postgres instance.
 
 ### `audit_log`
 
