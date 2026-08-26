@@ -1,14 +1,27 @@
 # =============================================================
-# database.py — SQLite Persistence Layer
-# NABDH AI Maintenance Platform v4
+# database.py — Persistence Layer (SQLite dev / PostgreSQL production)
+# NABDH AI Maintenance Platform v4.2.0
 # =============================================================
+#
+# Routed through a SQLAlchemy engine so the same query functions work
+# against either backend: SQLite when config.DATABASE_URL is empty (local
+# dev only, unchanged default), PostgreSQL when it's set to a postgresql://
+# DSN (production — enables Row-Level Security, see docs/rls_policies.md).
+#
+# Every function below keeps its pre-existing signature and return shape.
+# Query strings still use sqlite3-style '?' placeholders with positional
+# tuple params — _to_named() below translates them to SQLAlchemy's named
+# bind style so the SQL bodies didn't need a line-by-line rewrite.
 
-import sqlite3
+import contextvars
 import json
-import threading
 import logging
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 
 import config
 
@@ -16,21 +29,139 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
+# Per-request identity, read by _connect() on every new Postgres connection
+# checkout so Row-Level Security's current_setting('app.username'/'app.user_role')
+# resolves correctly. Set once per request via set_session_context() (wired
+# into auth.get_current_user()). Context vars are isolated per asyncio task /
+# thread, so concurrent requests don't interfere with each other.
+_current_username: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("_current_username", default=None)
+_current_role:     "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("_current_role", default=None)
 
-# ── Connection factory ────────────────────────────────────────
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.DATABASE_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+# ── Engine ───────────────────────────────────────────────────────
+
+def _build_engine() -> Engine:
+    if config.DATABASE_URL:
+        return create_engine(config.DATABASE_URL, pool_pre_ping=True)
+    return create_engine(
+        f"sqlite:///{config.DATABASE_PATH}",
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True,
+    )
+
+
+_engine: Engine = _build_engine()
+
+
+@event.listens_for(_engine, "connect")
+def _on_new_dbapi_connection(dbapi_conn, connection_record):
+    if _engine.dialect.name == "sqlite":
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+
+def is_postgres() -> bool:
+    return _engine.dialect.name == "postgresql"
+
+
+# ── sqlite3-compatible connection/row shim over SQLAlchemy ──────
+
+def _to_named(sql: str, params) -> tuple[str, dict]:
+    """'?' positional placeholders + a tuple/list of params -> SQLAlchemy's
+    named-bind style. Dict params (already named) pass through unchanged."""
+    if params is None:
+        params = ()
+    if isinstance(params, dict):
+        return sql, params
+    out = []
+    idx = 0
+    for ch in sql:
+        if ch == "?":
+            out.append(f":p{idx}")
+            idx += 1
+        else:
+            out.append(ch)
+    return "".join(out), {f"p{i}": v for i, v in enumerate(params)}
+
+
+class _Row:
+    """Mimics sqlite3.Row: dict(row), row['col'], and row[0] all work."""
+    __slots__ = ("_data",)
+
+    def __init__(self, mapping):
+        self._data = dict(mapping)
+
+    def keys(self):
+        return self._data.keys()
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self._data.values())[key]
+        return self._data[key]
+
+    def __repr__(self):
+        return f"_Row({self._data!r})"
+
+
+class _RowResult:
+    """Mimics the subset of sqlite3.Cursor used by this module."""
+
+    def __init__(self, sa_result):
+        self._result = sa_result
+
+    @property
+    def rowcount(self) -> int:
+        try:
+            return self._result.rowcount
+        except Exception:
+            return -1
+
+    def fetchall(self) -> list:
+        return [_Row(m) for m in self._result.mappings().all()]
+
+    def fetchone(self):
+        m = self._result.mappings().first()
+        return _Row(m) if m is not None else None
+
+
+class _ConnectionWrapper:
+    def __init__(self, sa_conn):
+        self._conn = sa_conn
+
+    def execute(self, sql: str, params=()) -> _RowResult:
+        named_sql, named_params = _to_named(sql, params)
+        return _RowResult(self._conn.execute(text(named_sql), named_params))
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _connect() -> _ConnectionWrapper:
+    sa_conn = _engine.connect()
+    if is_postgres():
+        username = _current_username.get()
+        role = _current_role.get()
+        sa_conn.execute(text("SELECT set_config('app.username', :u, false)"), {"u": username or ""})
+        sa_conn.execute(text("SELECT set_config('app.user_role', :r, false)"), {"r": role or ""})
+    return _ConnectionWrapper(sa_conn)
 
 
 # ── Schema bootstrap ──────────────────────────────────────────
 
 def init_db() -> None:
-    """Create all tables if they do not exist. Idempotent."""
+    """Create all legacy tables if they do not exist. Idempotent. SQLite only
+    — on PostgreSQL the schema is owned by Alembic (`alembic upgrade head`),
+    since Postgres has no 'CREATE TABLE IF NOT EXISTS this whole batch' bootstrap
+    script the way this function is for SQLite dev."""
+    if is_postgres():
+        logger.info("PostgreSQL backend — schema is managed by Alembic (run `alembic upgrade head`).")
+        return
+
     ddl = """
     CREATE TABLE IF NOT EXISTS predictions (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,7 +258,10 @@ def init_db() -> None:
     with _lock:
         conn = _connect()
         try:
-            conn.executescript(ddl)
+            for statement in ddl.split(";"):
+                statement = statement.strip()
+                if statement:
+                    conn.execute(statement)
             conn.commit()
             logger.info("Database schema initialised at %s", config.DATABASE_PATH)
         finally:
@@ -151,12 +285,15 @@ def insert_prediction(
     top_factors:   list,
     anomalies:     list,
 ) -> None:
-    sql = """
-    INSERT OR IGNORE INTO predictions
+    conflict_clause = "ON CONFLICT (request_id) DO NOTHING" if is_postgres() else ""
+    insert_verb = "INSERT" if is_postgres() else "INSERT OR IGNORE"
+    sql = f"""
+    {insert_verb} INTO predictions
         (request_id, timestamp, prediction, confidence, severity,
          health_score, failure_mode, ttf_hours, latency_ms, model_version,
          sensor_data, shap_values, top_factors, anomalies)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    {conflict_clause}
     """
     ts = datetime.now(timezone.utc).isoformat()
     with _lock:
@@ -230,24 +367,31 @@ def count_predictions() -> int:
 # ── Analytics ─────────────────────────────────────────────────
 
 def get_analytics(hours: int = 24) -> dict:
+    # Cutoff computed in Python (not SQL) so this works identically against
+    # both backends — SQLite's datetime('now', ...) has no Postgres
+    # equivalent, but both compare ISO8601 TEXT timestamps lexicographically
+    # the same way.
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    # Postgres' round() only accepts (numeric, int), not (double precision, int).
+    cast = "::numeric" if is_postgres() else ""
     sql = f"""
     SELECT
         COUNT(*)                                    AS total,
         SUM(prediction)                             AS failures,
-        ROUND(AVG(confidence), 4)                   AS avg_confidence,
-        ROUND(AVG(latency_ms), 2)                   AS avg_latency,
-        ROUND(MAX(latency_ms), 2)                   AS max_latency,
-        ROUND(AVG(health_score), 2)                 AS avg_health,
+        ROUND(AVG(confidence){cast}, 4)             AS avg_confidence,
+        ROUND(AVG(latency_ms){cast}, 2)             AS avg_latency,
+        ROUND(MAX(latency_ms){cast}, 2)             AS max_latency,
+        ROUND(AVG(health_score){cast}, 2)           AS avg_health,
         SUM(CASE WHEN severity='HIGH'   THEN 1 END) AS high_count,
         SUM(CASE WHEN severity='MEDIUM' THEN 1 END) AS medium_count,
         SUM(CASE WHEN severity='LOW'    THEN 1 END) AS low_count,
         SUM(CASE WHEN severity='NONE'   THEN 1 END) AS none_count
     FROM predictions
-    WHERE timestamp >= datetime('now', '-{hours} hours')
+    WHERE timestamp >= ?
     """
     conn = _connect()
     try:
-        row = dict(conn.execute(sql).fetchone())
+        row = dict(conn.execute(sql, (cutoff,)).fetchone())
         trend_rows = [
             dict(r) for r in conn.execute(
                 "SELECT timestamp, confidence, prediction, severity, health_score "
@@ -256,12 +400,12 @@ def get_analytics(hours: int = 24) -> dict:
         ]
         trend_rows.reverse()
         row["confidence_trend"] = trend_rows
-        mode_sql = f"""
+        mode_sql = """
         SELECT failure_mode, COUNT(*) as cnt FROM predictions
-        WHERE timestamp >= datetime('now', '-{hours} hours') AND failure_mode IS NOT NULL
+        WHERE timestamp >= ? AND failure_mode IS NOT NULL
         GROUP BY failure_mode
         """
-        row["failure_mode_distribution"] = [dict(r) for r in conn.execute(mode_sql).fetchall()]
+        row["failure_mode_distribution"] = [dict(r) for r in conn.execute(mode_sql, (cutoff,)).fetchall()]
         return row
     finally:
         conn.close()
@@ -374,10 +518,13 @@ def insert_rca(
     failure_mode:  str,
     confidence:    float,
 ) -> None:
-    sql = """
-    INSERT OR IGNORE INTO rca_records
+    conflict_clause = "ON CONFLICT (request_id) DO NOTHING" if is_postgres() else ""
+    insert_verb = "INSERT" if is_postgres() else "INSERT OR IGNORE"
+    sql = f"""
+    {insert_verb} INTO rca_records
         (request_id, timestamp, primary_cause, causal_chain, failure_mode, confidence)
     VALUES (?, ?, ?, ?, ?, ?)
+    {conflict_clause}
     """
     ts = datetime.now(timezone.utc).isoformat()
     with _lock:
@@ -529,27 +676,34 @@ def insert_security_event(
             conn.close()
 
 
-def set_session_context(username: Optional[str]) -> None:
+def set_session_context(username: Optional[str], role: Optional[str] = None) -> None:
     """
-    Records the current request's user so DB-level triggers can attribute
-    activity_log rows to a human.
+    Records the current request's user (and role) so DB-level enforcement can
+    identify who's asking:
+
+    PostgreSQL (production): stored in context vars, applied fresh via
+    set_config() on every new connection checkout in _connect(). This is what
+    Row-Level Security's current_setting('app.username'/'app.user_role')
+    reads, and what activity_logs triggers attribute changes to.
 
     SQLite (dev only): best-effort — writes to a single-row `_session_context`
-    table that the activity_logs triggers read from. This is a global, not a
-    per-connection, value; under concurrent SQLite requests the attribution
-    can race. That's acceptable here because SQLite is documented as local
-    dev only — the enforced, race-free mechanism is Postgres's per-transaction
-    `SET LOCAL app.username`, wired up when the SQLAlchemy/Postgres backend
-    lands.
+    table that the activity_logs triggers (see migration 0001) read from.
+    This is a global, not a per-connection, value; under concurrent SQLite
+    requests the attribution can race. Acceptable because SQLite is
+    documented as local dev only — there's no RLS equivalent on SQLite at all.
     """
+    _current_username.set(username)
+    _current_role.set(role)
+
+    if is_postgres():
+        return  # applied per-connection in _connect() from the context vars above
+
     with _lock:
         conn = _connect()
         try:
-            conn.execute(
-                "UPDATE _session_context SET username = ? WHERE id = 1", (username,)
-            )
+            conn.execute("UPDATE _session_context SET username = ? WHERE id = 1", (username,))
             conn.commit()
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # _session_context not present (e.g. migrations not yet applied)
         finally:
             conn.close()
@@ -736,3 +890,56 @@ def get_security_events(
         return result
     finally:
         conn.close()
+
+
+# ── Equipment & viewer scoping (Row-Level Security support) ─────
+
+def get_equipment_list() -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT id, name, location, created_at FROM equipment ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_user_equipment_scope(username: str) -> list[int]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT equipment_id FROM user_equipment_scope WHERE username = ?", (username,)
+        ).fetchall()
+        return [r["equipment_id"] for r in rows]
+    finally:
+        conn.close()
+
+
+def add_user_equipment_scope(username: str, equipment_id: int) -> None:
+    insert_verb = "INSERT" if is_postgres() else "INSERT OR IGNORE"
+    conflict_clause = "ON CONFLICT (username, equipment_id) DO NOTHING" if is_postgres() else ""
+    sql = f"""
+    {insert_verb} INTO user_equipment_scope (username, equipment_id)
+    VALUES (?, ?)
+    {conflict_clause}
+    """
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(sql, (username, equipment_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def remove_user_equipment_scope(username: str, equipment_id: int) -> bool:
+    with _lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM user_equipment_scope WHERE username = ? AND equipment_id = ?",
+                (username, equipment_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()

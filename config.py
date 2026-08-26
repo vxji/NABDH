@@ -47,6 +47,9 @@ REFERENCE_DATA_PATH = os.getenv("REFERENCE_DATA_PATH", "reference_data.csv")
 
 # ── Persistence ───────────────────────────────────────────────
 DATABASE_PATH = os.getenv("DATABASE_PATH", "nabdh.db")
+# Empty = SQLite (local dev only). Set to a postgresql:// DSN for production —
+# enables Row-Level Security (see docs/rls_policies.md).
+DATABASE_URL  = os.getenv("DATABASE_URL", "")
 
 # ── Drift detection ───────────────────────────────────────────
 DRIFT_WINDOW_SIZE   = int(os.getenv("DRIFT_WINDOW_SIZE",   "500"))

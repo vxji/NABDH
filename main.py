@@ -159,6 +159,12 @@ class SensorInput(BaseModel):
         return self
 
 
+class UserEquipmentScopeRequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    username:     str = Field(min_length=1, max_length=50)
+    equipment_id: int
+
+
 class BatchInput(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     records: Annotated[
@@ -636,3 +642,46 @@ async def reload_permissions(
 ):
     auth.reload_permissions()
     return {"status": "reloaded", "role_permissions": database.get_role_permissions()}
+
+
+# =============================================================
+# EQUIPMENT — registry + viewer scoping (Row-Level Security support)
+# =============================================================
+
+@app.get("/equipment", tags=["Equipment"])
+@limiter.limit(config.RATE_LIMIT)
+async def list_equipment(
+    request:      Request,
+    current_user: User = require_viewer,
+):
+    return {"equipment": database.get_equipment_list()}
+
+
+@app.post("/admin/user-equipment-scope", tags=["Equipment"])
+@limiter.limit(config.RATE_LIMIT)
+async def grant_user_equipment_scope(
+    request:      Request,
+    body:         UserEquipmentScopeRequest,
+    current_user: User = require_admin,
+):
+    """
+    Grants a viewer access to a specific piece of equipment. On PostgreSQL
+    this directly controls what Row-Level Security lets that user's session
+    see (docs/rls_policies.md) — on SQLite it's stored the same way but has
+    no enforcement effect (SQLite has no RLS).
+    """
+    database.add_user_equipment_scope(body.username, body.equipment_id)
+    return {"status": "granted", "username": body.username, "equipment_id": body.equipment_id}
+
+
+@app.delete("/admin/user-equipment-scope", tags=["Equipment"])
+@limiter.limit(config.RATE_LIMIT)
+async def revoke_user_equipment_scope(
+    request:      Request,
+    body:         UserEquipmentScopeRequest,
+    current_user: User = require_admin,
+):
+    ok = database.remove_user_equipment_scope(body.username, body.equipment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No such scope grant.")
+    return {"status": "revoked", "username": body.username, "equipment_id": body.equipment_id}

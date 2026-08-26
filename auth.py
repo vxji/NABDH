@@ -444,8 +444,9 @@ def get_current_user(
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled.")
 
-    # Attribute any DB-trigger-recorded activity (activity_logs) to this user.
-    database.set_session_context(user.username)
+    # Attribute any DB-trigger-recorded activity (activity_logs) to this user,
+    # and (on Postgres) set the session vars Row-Level Security policies read.
+    database.set_session_context(user.username, user.role.value)
 
     return user
 
