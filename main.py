@@ -25,6 +25,7 @@ import ml_logic
 import monitoring
 import database
 import auth
+import timeline
 from auth import User, require_viewer, require_operator, require_admin
 from services.notifications import proactive_check
 
@@ -157,6 +158,11 @@ class SensorInput(BaseModel):
                     f"physical range [{meta['min']:.1f}, {meta['max']:.1f}]{meta['unit']}."
                 )
         return self
+
+
+class PrescriptiveStatusUpdate(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    status: str = Field(pattern="^(OPEN|IN_PROGRESS|RESOLVED)$")
 
 
 class UserEquipmentScopeRequest(BaseModel):
@@ -494,6 +500,23 @@ async def get_prescriptive(
     }
 
 
+@app.patch("/prescriptive/{request_id}/status", tags=["Prescriptive"])
+@limiter.limit(config.RATE_LIMIT)
+async def set_prescriptive_status(
+    request:      Request,
+    request_id:   str,
+    body:         PrescriptiveStatusUpdate,
+    current_user: User = require_operator,
+):
+    """Marks a prescriptive action's status — RESOLVED is what the equipment
+    timeline (GET /equipment/{id}/timeline) reads as "last actual maintenance"."""
+    resolved_at = _dt.datetime.now(_dt.timezone.utc).isoformat() if body.status == "RESOLVED" else None
+    ok = database.update_prescriptive_status(request_id, body.status, resolved_at)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"No prescriptive action found for request_id {request_id}.")
+    return {"status": "updated", "request_id": request_id, "new_status": body.status}
+
+
 # =============================================================
 # ALERTS — viewer (read) / operator (acknowledge)
 # =============================================================
@@ -655,6 +678,21 @@ async def list_equipment(
     current_user: User = require_viewer,
 ):
     return {"equipment": database.get_equipment_list()}
+
+
+@app.get("/equipment/{equipment_id}/timeline", tags=["Equipment"])
+@limiter.limit(config.RATE_LIMIT)
+async def equipment_timeline(
+    request:      Request,
+    equipment_id: int,
+    current_user: User = require_viewer,
+):
+    """
+    Last actual maintenance -> current predicted status -> projected next
+    maintenance date, computed from a linear degradation-rate fit over
+    recent health_score readings (timeline.py — no ML model involved).
+    """
+    return timeline.get_equipment_timeline(equipment_id)
 
 
 @app.post("/admin/user-equipment-scope", tags=["Equipment"])

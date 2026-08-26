@@ -21,6 +21,11 @@ DRIFT_URL     = f"{BACKEND_HOST}/drift_report"
 HISTORY_URL   = f"{BACKEND_HOST}/history"
 ANALYTICS_URL = f"{BACKEND_HOST}/analytics"
 ALERTS_URL    = f"{BACKEND_HOST}/alerts"
+EQUIPMENT_URL = f"{BACKEND_HOST}/equipment"
+
+
+def timeline_url(equipment_id: int) -> str:
+    return f"{BACKEND_HOST}/equipment/{equipment_id}/timeline"
 
 
 def _expire_session() -> None:
@@ -999,6 +1004,7 @@ with col_ctrl:
     history_btn   = st.button("History",         use_container_width=True, key="sb_hist",    type="secondary")
     analytics_btn = st.button("Analytics",       use_container_width=True, key="sb_anlt",    type="secondary")
     alerts_btn    = st.button("Alerts",          use_container_width=True, key="sb_alrt",    type="secondary")
+    timeline_btn  = st.button("Equipment Timeline", use_container_width=True, key="sb_tmln", type="secondary")
 
     st.markdown(
         f'<div style="margin-top:16px;border-top:1px solid {_BDR};padding-top:16px;">'
@@ -1024,13 +1030,14 @@ with col_ctrl:
 # ── RIGHT CONTENT PANEL ───────────────────────────────────────
 with col_main:
 
-    tab_pred, tab_sys, tab_drift, tab_hist, tab_anlt, tab_alrt = st.tabs([
+    tab_pred, tab_sys, tab_drift, tab_hist, tab_anlt, tab_alrt, tab_tmln = st.tabs([
         "  Prediction  ",
         "  System  ",
     "  Drift  ",
     "  History  ",
     "  Analytics  ",
     "  Alerts  ",
+    "  Equipment Timeline  ",
 ])
 
 
@@ -1452,6 +1459,103 @@ with tab_alrt:
             '<div style="text-align:center;padding:60px 0;">'
             f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
             f'Click <span style="color:{_BLU};font-weight:500;">Alerts</span> to load data</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# EQUIPMENT TIMELINE TAB
+# ═══════════════════════════════════════════════════════════════
+
+_STATUS_COLOR = {"green": _GRN, "yellow": _ORG, "red": _RED, "unknown": _T3}
+
+
+def _timeline_chart(current_status: dict, next_maintenance: dict) -> go.Figure:
+    """Horizontal green/yellow/red bar: now -> projected next-maintenance ETA."""
+    color = _STATUS_COLOR.get((current_status or {}).get("status_color"), _T3)
+    eta_hours = (next_maintenance or {}).get("eta_hours")
+    span = eta_hours if eta_hours is not None else 72  # flat/improving health — show a neutral window
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=[span], y=["Equipment"], orientation="h",
+        marker=dict(color=color), width=0.5,
+        hovertemplate="%{x:.1f}h<extra></extra>",
+    ))
+    fig.update_layout(
+        height=110, margin=dict(l=0, r=0, t=10, b=30),
+        xaxis=dict(title="Hours from now", showgrid=False),
+        yaxis=dict(visible=False),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+    return fig
+
+
+with tab_tmln:
+    eq_col1, eq_col2 = st.columns([3, 1])
+    with eq_col1:
+        equipment_id_sel = st.number_input(
+            "Equipment ID", min_value=1, value=1, step=1, key="tmln_eq_id",
+        )
+    with eq_col2:
+        tmln_refresh = st.button("Load Timeline", use_container_width=True, key="tmln_refresh")
+
+    if timeline_btn or tmln_refresh:
+        with st.spinner("Loading equipment timeline…"):
+            try:
+                resp = requests.get(timeline_url(int(equipment_id_sel)), headers=HEADERS, timeout=10)
+                resp.raise_for_status()
+                st.session_state["timeline"] = resp.json()
+            except Exception as e:
+                if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
+                st.error(f"Cannot fetch equipment timeline: {e}")
+
+    tl = st.session_state.get("timeline")
+    if tl:
+        current   = tl.get("current_status")
+        next_maint = tl.get("next_predicted_maintenance")
+        last_maint = tl.get("last_maintenance")
+
+        _label(f"Equipment #{tl.get('equipment_id')} — Health Timeline")
+
+        if current:
+            status_color = _STATUS_COLOR.get(current.get("status_color"), _T3)
+            kt1, kt2, kt3 = st.columns(3)
+            with kt1: kpi("Current Health", f"{current.get('health_score', '—')}", status_color)
+            with kt2: kpi("Severity", current.get("severity", "—"), status_color)
+            with kt3: kpi(
+                "Next Maintenance ETA",
+                f"{next_maint.get('eta_hours')}h" if next_maint and next_maint.get("eta_hours") is not None else "—",
+                _ORG,
+            )
+            st.plotly_chart(
+                _timeline_chart(current, next_maint), use_container_width=True,
+                config={"displayModeBar": False}, key="equipment_timeline_chart",
+            )
+            if next_maint and next_maint.get("message"):
+                st.caption(next_maint["message"])
+        else:
+            st.info("No predictions recorded yet for this equipment.")
+
+        _label("Last Actual Maintenance")
+        if last_maint:
+            st.markdown(
+                f'<div style="background:{_SRF2};border-radius:14px;padding:16px 20px;">'
+                f'<div style="font:500 12px/1 Inter,sans-serif;color:{_T1};margin-bottom:6px;">'
+                f'{last_maint.get("failure_mode","—")} — resolved {str(last_maint.get("resolved_at",""))[:16].replace("T"," ")}</div>'
+                f'<div style="font:400 12px/1.4 Inter,sans-serif;color:{_T3};">Request {last_maint.get("request_id","—")}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("No resolved maintenance action on record for this equipment yet.")
+    else:
+        st.markdown(
+            '<div style="text-align:center;padding:60px 0;">'
+            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
+            f'Click <span style="color:{_BLU};font-weight:500;">Load Timeline</span> to view equipment status</div>'
             '</div>',
             unsafe_allow_html=True,
         )

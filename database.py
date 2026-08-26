@@ -284,6 +284,7 @@ def insert_prediction(
     shap_values:   dict,
     top_factors:   list,
     anomalies:     list,
+    equipment_id:  int = 1,
 ) -> None:
     conflict_clause = "ON CONFLICT (request_id) DO NOTHING" if is_postgres() else ""
     insert_verb = "INSERT" if is_postgres() else "INSERT OR IGNORE"
@@ -291,8 +292,8 @@ def insert_prediction(
     {insert_verb} INTO predictions
         (request_id, timestamp, prediction, confidence, severity,
          health_score, failure_mode, ttf_hours, latency_ms, model_version,
-         sensor_data, shap_values, top_factors, anomalies)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         sensor_data, shap_values, top_factors, anomalies, equipment_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     {conflict_clause}
     """
     ts = datetime.now(timezone.utc).isoformat()
@@ -303,11 +304,37 @@ def insert_prediction(
                 request_id, ts, prediction, confidence, severity,
                 health_score, failure_mode, ttf_hours, latency_ms, model_version,
                 json.dumps(sensor_data), json.dumps(shap_values),
-                json.dumps(top_factors), json.dumps(anomalies),
+                json.dumps(top_factors), json.dumps(anomalies), equipment_id,
             ))
             conn.commit()
         finally:
             conn.close()
+
+
+def get_predictions_by_equipment(equipment_id: int, limit: int = 50) -> list[dict]:
+    sql = """
+    SELECT id, request_id, timestamp, prediction, confidence, severity,
+           health_score, failure_mode, ttf_hours, latency_ms, model_version,
+           sensor_data, shap_values, top_factors, anomalies
+    FROM predictions
+    WHERE equipment_id = ?
+    ORDER BY timestamp DESC LIMIT ?
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(sql, (equipment_id, limit)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            for field in ("sensor_data", "shap_values", "top_factors", "anomalies"):
+                try:
+                    d[field] = json.loads(d[field]) if d[field] else {}
+                except Exception:
+                    d[field] = {}
+            result.append(d)
+        return result
+    finally:
+        conn.close()
 
 
 def get_predictions(limit: int = 100, offset: int = 0, severity: Optional[str] = None) -> list[dict]:
@@ -474,19 +501,56 @@ def insert_prescriptive(
     failure_mode: str,
     actions:      list,
     priority:     str,
+    equipment_id: int = 1,
 ) -> None:
     sql = """
-    INSERT INTO prescriptive_actions (request_id, timestamp, failure_mode, actions, priority)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO prescriptive_actions (request_id, timestamp, failure_mode, actions, priority, equipment_id)
+    VALUES (?, ?, ?, ?, ?, ?)
     """
     ts = datetime.now(timezone.utc).isoformat()
     with _lock:
         conn = _connect()
         try:
-            conn.execute(sql, (request_id, ts, failure_mode, json.dumps(actions), priority))
+            conn.execute(sql, (request_id, ts, failure_mode, json.dumps(actions), priority, equipment_id))
             conn.commit()
         finally:
             conn.close()
+
+
+def update_prescriptive_status(request_id: str, status: str, resolved_at: Optional[str] = None) -> bool:
+    with _lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                "UPDATE prescriptive_actions SET status = ?, resolved_at = ? WHERE request_id = ?",
+                (status, resolved_at, request_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+
+def get_latest_resolved_prescriptive(equipment_id: int) -> Optional[dict]:
+    """Most recent RESOLVED prescriptive action for an equipment — the
+    "last actual maintenance" shown in the equipment timeline."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM prescriptive_actions WHERE equipment_id = ? AND status = 'RESOLVED' "
+            "ORDER BY resolved_at DESC LIMIT 1",
+            (equipment_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["actions"] = json.loads(d["actions"]) if d["actions"] else []
+        except Exception:
+            d["actions"] = []
+        return d
+    finally:
+        conn.close()
 
 
 def get_prescriptive(limit: int = 20, status: Optional[str] = None) -> list[dict]:
