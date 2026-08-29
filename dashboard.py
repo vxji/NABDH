@@ -11,6 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
+APP_VERSION = "4.2.0"
+
 # ── Endpoints ────────────────────────────────────────────────
 BACKEND_HOST  = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 LOGIN_URL     = f"{BACKEND_HOST}/auth/login"
@@ -75,20 +77,130 @@ def _on_http_error(e: requests.exceptions.HTTPError) -> None:
         _expire_session()
 
 
+_MAIL_ICON_ROW = (
+    '<div style="display:flex;align-items:center;gap:6px;margin:0 0 6px;">'
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.45)" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>'
+    '<span style="font:500 11px/1 Inter,sans-serif;color:rgba(255,255,255,0.45);'
+    'letter-spacing:0.3px;text-transform:uppercase;">Username</span></div>'
+)
+_LOCK_ICON_ROW = (
+    '<div style="display:flex;align-items:center;gap:6px;margin:14px 0 6px;">'
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.45)" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+    '<span style="font:500 11px/1 Inter,sans-serif;color:rgba(255,255,255,0.45);'
+    'letter-spacing:0.3px;text-transform:uppercase;">Password</span></div>'
+)
+
+
 def _login_screen() -> None:
-    """Render login form and handle authentication."""
+    """Render the login screen and handle authentication.
+
+    This is the true first Streamlit command in this run (the auth guard
+    below calls st.stop() before the app's own set_page_config/theme CSS
+    ever executes), so this function owns its own page config + styling.
+    """
+    st.set_page_config(
+        page_title            = "NABDH · Sign In",
+        page_icon             = "◈",
+        layout                = "centered",
+        initial_sidebar_state = "collapsed",
+    )
+
+    st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*, *::before, *::after { box-sizing: border-box; }
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+  background: #000 !important;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+#MainMenu, footer, header               { visibility: hidden !important; }
+section[data-testid="stSidebar"]        { display: none !important; }
+
+@keyframes loginGlow { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
+.login-glow {
+  position: fixed; top: -12%; left: 50%; transform: translateX(-50%);
+  width: 70vw; height: 42vh; border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(168,85,247,0.35), transparent 70%);
+  filter: blur(70px);
+  animation: loginGlow 6s ease-in-out infinite;
+  pointer-events: none; z-index: 0;
+}
+
+.block-container { max-width: 400px !important; padding-top: 9vh !important; position: relative; z-index: 1; }
+
+.login-card {
+  background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  padding: 32px 28px 8px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55);
+}
+.login-logo {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.12);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 16px;
+  background: linear-gradient(135deg, rgba(168,85,247,0.30), rgba(255,255,255,0.02));
+  font: 700 18px/1 Inter, sans-serif; color: #f5f5f7;
+}
+.login-title    { text-align: center; font: 700 22px/1.2 Inter, sans-serif; color: #f5f5f7; margin-bottom: 4px; }
+.login-subtitle { text-align: center; font: 400 13px/1.4 Inter, sans-serif; color: rgba(255,255,255,0.5); margin-bottom: 26px; }
+
+[data-testid="stWidgetLabel"] { display: none !important; }
+[data-testid="stTextInput"] input {
+  background: rgba(255,255,255,0.05) !important;
+  border: 1px solid rgba(255,255,255,0.10) !important;
+  color: #f5f5f7 !important;
+  border-radius: 10px !important;
+  height: 42px !important;
+}
+[data-testid="stTextInput"] input:focus {
+  border-color: rgba(168,85,247,0.55) !important;
+  box-shadow: 0 0 0 3px rgba(168,85,247,0.15) !important;
+}
+[data-testid="stTextInput"] input::placeholder { color: rgba(255,255,255,0.28) !important; }
+
+div[data-testid="stFormSubmitButton"] { margin-top: 22px; }
+div[data-testid="stFormSubmitButton"] button {
+  background: linear-gradient(135deg, #a855f7, #7c3aed) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  height: 42px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 20px rgba(168,85,247,0.35) !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+}
+div[data-testid="stFormSubmitButton"] button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 26px rgba(168,85,247,0.50) !important;
+}
+</style>
+<div class="login-glow"></div>
+""", unsafe_allow_html=True)
+
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
     st.markdown(
-        '<div style="max-width:380px;margin:80px auto;">'
-        '<div style="font:700 28px/1 Inter,sans-serif;color:#f5f5f7;'
-        'letter-spacing:-0.8px;margin-bottom:6px;">NABDH</div>'
-        '<div style="font:400 13px/1 Inter,sans-serif;color:#86868b;'
-        'margin-bottom:36px;">AI Maintenance Platform</div>',
+        '<div class="login-logo">N</div>'
+        '<div class="login-title">Welcome Back</div>'
+        '<div class="login-subtitle">Sign in to continue to NABDH</div>',
         unsafe_allow_html=True,
     )
+
     with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        st.markdown(_MAIL_ICON_ROW, unsafe_allow_html=True)
+        username = st.text_input("Username", placeholder="Enter your username", label_visibility="collapsed")
+        st.markdown(_LOCK_ICON_ROW, unsafe_allow_html=True)
+        password = st.text_input("Password", type="password", placeholder="Enter your password", label_visibility="collapsed")
         submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if submitted:
         try:
@@ -111,7 +223,6 @@ def _login_screen() -> None:
         except requests.exceptions.ConnectionError:
             st.error("Cannot connect to the API server — make sure it is running on port 8000.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 
@@ -136,6 +247,24 @@ SENSORS = {
     "sensor_9":  {"min":  0.0, "max": 100.0, "default":  50.0, "label": "Pressure 2",   "unit": "kPa",  "tag": "PRS2"},
     "sensor_10": {"min":  0.0, "max": 100.0, "default":  50.0, "label": "Vibration",    "unit": "mm/s", "tag": "VIB"},
 }
+
+# Groups the 10-slider control panel into scannable clusters instead of one
+# flat list — purely a left-panel presentation grouping, doesn't touch the
+# sensor_N keys the backend/model expect.
+SENSOR_GROUPS = [
+    ("Thermal & Pressure", ["sensor_1", "sensor_2", "sensor_9"]),
+    ("Electrical",         ["sensor_5", "sensor_6", "sensor_8"]),
+    ("Mechanical",         ["sensor_4", "sensor_10"]),
+    ("Environment",        ["sensor_3", "sensor_7"]),
+]
+
+
+def _sync_slider_from_num(sid: str) -> None:
+    st.session_state[sid] = st.session_state[f"{sid}_num"]
+
+
+def _sync_num_from_slider(sid: str) -> None:
+    st.session_state[f"{sid}_num"] = st.session_state[sid]
 
 # ── Semantic colors — fixed across all themes ─────────────────
 _BLU = "#0071e3"          # Apple blue — action accent
@@ -253,10 +382,84 @@ section[data-testid="stSidebar"] .stMarkdown p {
 [data-testid="stSlider"] [data-testid="stSliderThumb"] {
   background: #f5f5f7 !important;
 }
-.stSlider span {
-  color: #86868b !important;
+[data-testid="stSlider"] span,
+[data-testid="stSlider"] p {
+  color: #a1a1a6 !important;
   font-family: 'Inter', sans-serif !important;
-  font-size: 11px !important;
+  font-size: 12px !important;
+}
+
+/* ── WIDGET LABELS (slider/checkbox titles — Streamlit's own text,
+   not covered by the .stCheckbox/.stSlider rules above, which is what
+   made these unreadable in light mode: they kept this dark-mode color
+   even after switching themes) ── */
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+[data-testid="stWidgetLabel"] div {
+  color: #c7c7cc !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important;
+}
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] p,
+[data-testid="stCheckbox"] span {
+  color: #c7c7cc !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 13px !important;
+}
+
+/* ── SENSOR CONTROL ROWS — compact label + value box + reset, scoped to
+   the sticky first column only (other sliders elsewhere keep tick labels) ── */
+[data-testid="column"]:first-child [data-testid="stTickBarMin"],
+[data-testid="column"]:first-child [data-testid="stTickBarMax"] {
+  display: none !important;
+}
+/* Force every wrapper level transparent first — Streamlit's own native
+   theme (independent of this app's light/dark toggle) puts a dark
+   background on one of these ancestor divs; which exact one carries it
+   isn't reliably documented across versions, so neutralize them all and
+   let only the input's own background (set below, per-theme) show. */
+[data-testid="column"]:first-child [data-testid="stNumberInput"],
+[data-testid="column"]:first-child [data-testid="stNumberInput"] > div,
+[data-testid="column"]:first-child [data-testid="stNumberInput"] > div > div,
+[data-testid="column"]:first-child [data-testid="stNumberInput"] [data-baseweb="base-input"],
+[data-testid="column"]:first-child [data-testid="stNumberInput"] [data-baseweb="input"],
+[data-testid="column"]:first-child [data-testid="stNumberInputContainer"] {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+[data-testid="column"]:first-child [data-testid="stNumberInput"] input {
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.10) !important;
+  color: #f5f5f7 !important;
+  border-radius: 8px !important;
+  height: 28px !important;
+  font-size: 12px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  text-align: center !important;
+  padding: 0 4px !important;
+}
+[data-testid="column"]:first-child [data-testid="stNumberInput"] button {
+  display: none !important; /* hide the +/- steppers for a compact box */
+}
+[data-testid="column"]:first-child [data-testid="stHorizontalBlock"] [data-testid="column"]:last-child button {
+  height: 28px !important;
+  width: 28px !important;
+  min-width: 28px !important;
+  padding: 0 !important;
+  border-radius: 8px !important;
+  border-bottom: none !important;
+  background: rgba(255,255,255,0.05) !important;
+}
+[data-testid="column"]:first-child [data-testid="stHorizontalBlock"] [data-testid="column"]:last-child button:hover {
+  background: rgba(255,255,255,0.1) !important;
+}
+.reset-btn-spacer {
+  /* Pushes the reset button down past the number_input's own label row,
+     so it lines up with the input box, not the label text above it. */
+  height: 29px;
 }
 
 /* ── LAYOUT — sticky control panel ── */
@@ -334,19 +537,14 @@ button[kind="secondary"]:active,
   color: #f5f5f7 !important;
 }
 
-/* ── CHECKBOX ── */
-.stCheckbox > label {
-  font-family: 'Inter', sans-serif !important;
-  font-size: 12px !important;
-  font-weight: 400 !important;
-  color: #86868b !important;
-}
-
 /* ── SELECT SLIDER ── */
-.stSlider [data-testid="stTickBarMin"],
-.stSlider [data-testid="stTickBarMax"] {
-  color: #3a3a3c !important;
-  font-size: 10px !important;
+[data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-testid="stTickBarMax"] {
+  color: #98989d !important;
+  font-size: 12px !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 /* ── TABS ── */
@@ -378,6 +576,15 @@ button[kind="secondary"]:active,
 .stAlert  { border-radius: 14px !important; }
 .stJson   { background: #0d0d0d !important; border-radius: 14px !important; }
 .element-container .stDataFrame { background: transparent !important; }
+
+/* ── DATAFRAME — wrap tables in the same rounded/bordered card language
+   as everything else, so History/Drift tables don't look like a bare
+   Streamlit default dropped into a otherwise fully custom UI ── */
+[data-testid="stDataFrame"] {
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+}
 
 /* ── SCROLLBAR ── */
 ::-webkit-scrollbar       { width: 4px; height: 4px; }
@@ -426,14 +633,50 @@ section.main,
 .stTabs [aria-selected="true"]     { color: #1d1d1f !important; border-bottom-color: #1d1d1f !important; }
 .stTabs [data-baseweb="tab-panel"] { background: #f5f5f7 !important; }
 
-.stCheckbox > label { color: #6e6e73 !important; }
-.stSlider span      { color: #6e6e73 !important; }
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] p,
+[data-testid="stCheckbox"] span { color: #48484a !important; font-size: 13px !important; }
+[data-testid="stSlider"] span,
+[data-testid="stSlider"] p     { color: #48484a !important; font-size: 12px !important; }
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+[data-testid="stWidgetLabel"] div { color: #48484a !important; font-size: 13px !important; }
+[data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-testid="stTickBarMax"] {
+  color: #6e6e73 !important;
+  font-size: 12px !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
 [data-testid="stSlider"] [role="slider"] {
   background: #1d1d1f !important;
   border-color: #1d1d1f !important;
 }
 [data-testid="stSlider"] > div > div > div:first-child {
   background: rgba(0,0,0,0.12) !important;
+}
+
+/* .stApp-qualified so this reliably outranks the dark rule above on
+   specificity, instead of depending on which <style> block Streamlit
+   happens to place later in the DOM on a given rerun (unreliable — this
+   is what caused the light-mode box to stay dark before). */
+.stApp [data-testid="column"]:first-child [data-testid="stNumberInput"],
+.stApp [data-testid="column"]:first-child [data-testid="stNumberInput"] [data-baseweb="base-input"],
+.stApp [data-testid="column"]:first-child [data-testid="stNumberInput"] [data-baseweb="input"] {
+  background: transparent !important;
+}
+.stApp [data-testid="column"]:first-child [data-testid="stNumberInput"] input {
+  background: rgba(0,0,0,0.04) !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  color: #1d1d1f !important;
+}
+[data-testid="column"]:first-child [data-testid="stHorizontalBlock"] [data-testid="column"]:last-child button {
+  background: rgba(0,0,0,0.04) !important;
+}
+[data-testid="column"]:first-child [data-testid="stHorizontalBlock"] [data-testid="column"]:last-child button:hover {
+  background: rgba(0,0,0,0.08) !important;
 }
 
 button[kind="secondary"],
@@ -451,6 +694,7 @@ button[kind="secondary"]:hover,
 }
 .stJson   { background: #ffffff !important; }
 .stAlert  { background: rgba(0,0,0,0.04) !important; }
+[data-testid="stDataFrame"] { border-color: rgba(0,0,0,0.10) !important; }
 ::-webkit-scrollbar-thumb { background: #c7c7cc !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -517,6 +761,49 @@ def _label(text: str) -> None:
     )
 
 
+_ALERT_KIND = {
+    "error":   {"c": _RED, "label": "Error"},
+    "warning": {"c": _ORG, "label": "Warning"},
+    "success": {"c": _GRN, "label": "Success"},
+    "info":    {"c": _BLU, "label": "Info"},
+}
+
+
+def _alert(kind: str, message: str) -> None:
+    """Theme-matched replacement for st.error/warning/success/info — the
+    native Streamlit alerts render a fixed light-red/etc. box that clashes
+    with this app's dark/glass surfaces in dark mode."""
+    k = _ALERT_KIND.get(kind, _ALERT_KIND["info"])
+    st.markdown(
+        f'<div class="fade-in" style="display:flex;align-items:center;gap:12px;'
+        f'background:rgba({_rgb(k["c"])},0.09);border:1px solid rgba({_rgb(k["c"])},0.25);'
+        f'border-radius:14px;padding:14px 20px;margin:6px 0 20px;">'
+        f'{_pill(k["label"].upper(), k["c"])}'
+        f'<span style="font:400 13px/1.5 Inter,sans-serif;color:{k["c"]};">{message}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _empty_state(icon: str, hint: str, action: str = "") -> None:
+    """Shared empty/idle placeholder for every tab — mirrors the Prediction
+    tab's own idle screen so all seven tabs feel like one interface instead
+    of the first being 'designed' and the rest left as bare text."""
+    action_html = (
+        f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};margin-top:8px;">'
+        f'<span style="color:{_BLU};font-weight:500;">{action}</span></div>'
+        if action else ""
+    )
+    st.markdown(
+        f'<div class="fade-in" style="text-align:center;padding:60px 0 40px;">'
+        f'<div style="font:300 48px/1 Inter,sans-serif;color:{_BDR};'
+        f'letter-spacing:-2px;margin-bottom:20px;">{icon}</div>'
+        f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};margin-bottom:8px;">{hint}</div>'
+        f'{action_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # COMPONENTS
 # ═══════════════════════════════════════════════════════════════
@@ -543,6 +830,44 @@ def render_header() -> None:
         f'border-radius:20px;padding:7px 16px;">'
         f'<span style="font:500 11px/1 Inter,sans-serif;color:{_T2};">10 Sensors Active</span>'
         f'</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_hero() -> None:
+    """SaaS-landing-style banner: badge pill + big gradient headline +
+    subtitle, over a soft scoped glow. No fake nav/CTA/screenshot — those
+    don't map to an already-authenticated internal tool."""
+    grad_from = "#f5f5f7" if _THEME == "dark" else "#1d1d1f"
+    grad_to   = "rgba(0,113,227,0.65)"
+    st.markdown(
+        f'<div class="fade-in" style="position:relative;overflow:hidden;'
+        f'padding:40px 0 36px;text-align:center;">'
+        f'<div style="position:absolute;top:-60%;left:50%;transform:translateX(-50%);'
+        f'width:70%;height:220px;border-radius:50%;'
+        f'background:radial-gradient(ellipse at center, rgba(0,113,227,0.22), transparent 70%);'
+        f'filter:blur(50px);pointer-events:none;z-index:0;"></div>'
+
+        f'<div style="position:relative;z-index:1;">'
+        f'<div style="display:inline-flex;align-items:center;gap:8px;padding:7px 16px;'
+        f'border-radius:999px;border:1px solid {_BDR};background:{_SRF};margin-bottom:22px;">'
+        f'<div style="width:6px;height:6px;border-radius:50%;background:{_GRN};'
+        f'animation:liveDot 2s ease-in-out infinite;flex-shrink:0;"></div>'
+        f'<span style="font:500 11px/1 Inter,sans-serif;color:{_T2};">'
+        f'v{APP_VERSION} — Equipment Timeline is here</span>'
+        f'</div>'
+
+        f'<div style="font:600 40px/1.15 Inter,sans-serif;letter-spacing:-1.2px;'
+        f'background:linear-gradient(180deg, {grad_from}, {grad_to});'
+        f'-webkit-background-clip:text;-webkit-text-fill-color:transparent;'
+        f'background-clip:text;margin-bottom:14px;">'
+        f'Know about failures<br/>before they happen</div>'
+
+        f'<div style="font:400 14px/1.5 Inter,sans-serif;color:{_T2};'
+        f'max-width:520px;margin:0 auto;">'
+        f'Predictive &amp; prescriptive maintenance, root-cause analysis, and live '
+        f'drift monitoring — for every piece of equipment you run.</div>'
         f'</div></div>',
         unsafe_allow_html=True,
     )
@@ -700,7 +1025,7 @@ def render_gauge(confidence: float, prediction: int) -> None:
 
 def render_shap(shap_values: dict) -> None:
     if not shap_values:
-        st.info("No SHAP data available.")
+        _alert("info", "No SHAP data available.")
         return
     df      = pd.DataFrame(list(shap_values.items()), columns=["Feature","SHAP"])
     df      = df.sort_values("SHAP", key=abs, ascending=True)
@@ -960,6 +1285,7 @@ def _mode_bar(mode_dist: list) -> go.Figure:
 # ═══════════════════════════════════════════════════════════════
 
 render_header()
+render_hero()
 
 # Top-level two-column split: controls | content
 col_ctrl, col_main = st.columns([1, 4], gap="large")
@@ -976,13 +1302,47 @@ with col_ctrl:
     )
 
     sensor_vals: dict = {}
-    for sid, cfg in SENSORS.items():
-        miss = st.checkbox(f"Missing: {cfg['label']}", value=False, key=f"miss_{sid}")
-        sensor_vals[sid] = None if miss else st.slider(
-            f"{cfg['label']} ({cfg['unit']})",
-            min_value=cfg["min"], max_value=cfg["max"],
-            value=cfg["default"], step=0.1, key=sid,
+    for gi, (group_name, sids) in enumerate(SENSOR_GROUPS):
+        st.markdown(
+            f'<div style="font:600 10px/1 Inter,sans-serif;color:{_T3};'
+            f'letter-spacing:0.5px;text-transform:uppercase;'
+            f'margin:{0 if gi == 0 else 14}px 0 10px;">{group_name}</div>',
+            unsafe_allow_html=True,
         )
+        for sid in sids:
+            cfg = SENSORS[sid]
+            if sid not in st.session_state:
+                st.session_state[sid] = cfg["default"]
+            if f"{sid}_num" not in st.session_state:
+                st.session_state[f"{sid}_num"] = st.session_state[sid]
+
+            miss = st.checkbox(f"Missing: {cfg['label']}", value=False, key=f"miss_{sid}")
+
+            num_col, rst_col = st.columns([4, 1])
+            with num_col:
+                # Real (visible) Streamlit label — it handles its own spacing
+                # correctly, unlike a raw HTML label placed in the sibling
+                # column, which didn't line up with the input box next to it.
+                st.number_input(
+                    f"{cfg['label']} ({cfg['unit']})",
+                    min_value=cfg["min"], max_value=cfg["max"], step=0.1,
+                    key=f"{sid}_num", disabled=miss,
+                    on_change=_sync_slider_from_num, args=(sid,),
+                )
+            with rst_col:
+                st.markdown('<div class="reset-btn-spacer"></div>', unsafe_allow_html=True)
+                if st.button("↺", key=f"reset_{sid}", help="Reset to default", disabled=miss):
+                    st.session_state[sid] = cfg["default"]
+                    st.session_state[f"{sid}_num"] = cfg["default"]
+                    st.rerun()
+
+            sensor_vals[sid] = None if miss else st.slider(
+                f"{cfg['label']} ({cfg['unit']})",
+                min_value=cfg["min"], max_value=cfg["max"],
+                step=0.1, key=sid, label_visibility="collapsed", disabled=miss,
+                on_change=_sync_num_from_slider, args=(sid,),
+            )
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     predict_btn = st.button("Run Prediction", use_container_width=True, type="primary")
@@ -991,6 +1351,7 @@ with col_ctrl:
     if st.button("↺  Reset Sensors", use_container_width=True, key="reset_btn", type="secondary"):
         for sid, cfg in SENSORS.items():
             st.session_state[sid] = cfg["default"]
+            st.session_state[f"{sid}_num"] = cfg["default"]
             st.session_state[f"miss_{sid}"] = False
         st.rerun()
 
@@ -1058,14 +1419,14 @@ with tab_pred:
                 st.session_state["pred"]           = r
                 st.session_state["last_anomalies"] = r.get("sensor_anomalies", [])
             except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to backend — is the API server running on port 8000?")
+                _alert("error", "Cannot connect to backend — is the API server running on port 8000?")
                 st.stop()
             except requests.exceptions.HTTPError as e:
                 _on_http_error(e)
-                st.error(f"API {e.response.status_code}: {e.response.text}")
+                _alert("error", f"API {e.response.status_code}: {e.response.text}")
                 st.stop()
             except Exception as e:
-                st.error(f"Unexpected error: {e}")
+                _alert("error", f"Unexpected error: {e}")
                 st.stop()
 
     r = st.session_state.get("pred")
@@ -1089,7 +1450,7 @@ with tab_pred:
             )
 
         if r.get("trend_alert"):
-            st.warning(f"Confidence trend: **{r.get('confidence_trend')}** — unusual spike detected.")
+            _alert("warning", f"Confidence trend: <b>{r.get('confidence_trend')}</b> — unusual spike detected.")
 
         # KPI row
         pred = r.get("prediction", 0)
@@ -1161,17 +1522,7 @@ with tab_pred:
             st.json(r)
 
     elif not predict_btn:
-        st.markdown(
-            f'<div style="text-align:center;padding:60px 0 40px;">'
-            f'<div style="font:300 48px/1 Inter,sans-serif;color:{_BDR};'
-            f'letter-spacing:-2px;margin-bottom:20px;">◈</div>'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};margin-bottom:8px;">'
-            f'Adjust sensor values and press Run Prediction</div>'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'<span style="color:{_BLU};font-weight:500;">Run Prediction</span> to see results</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("◈", "Adjust sensor values and press Run Prediction", "Run Prediction")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1179,7 +1530,7 @@ with tab_pred:
 # ═══════════════════════════════════════════════════════════════
 
 with tab_sys:
-    if status_btn:
+    if status_btn or "status" not in st.session_state:
         with st.spinner("Fetching status…"):
             try:
                 resp = requests.get(STATUS_URL, headers=HEADERS, timeout=6)
@@ -1187,7 +1538,7 @@ with tab_sys:
                 st.session_state["status"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch status: {e}")
+                _alert("error", f"Cannot fetch status: {e}")
 
     s = st.session_state.get("status")
     if s:
@@ -1212,15 +1563,9 @@ with tab_sys:
             kpi("Uptime", f"{h:02d}h {m:02d}m", _GRN)
 
         if drift_d and s.get("drifted_features"):
-            st.warning(f"Drifted features: {', '.join(s['drifted_features'])}")
+            _alert("warning", f"Drifted features: {', '.join(s['drifted_features'])}")
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Click <span style="color:{_BLU};font-weight:500;">System Status</span> to load data</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("⌁", "Load a snapshot of API health, throughput and drift status", "System Status")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1228,7 +1573,7 @@ with tab_sys:
 # ═══════════════════════════════════════════════════════════════
 
 with tab_drift:
-    if drift_btn:
+    if drift_btn or "drift" not in st.session_state:
         with st.spinner("Fetching drift report…"):
             try:
                 resp = requests.get(DRIFT_URL, headers=HEADERS, timeout=6)
@@ -1236,12 +1581,12 @@ with tab_drift:
                 st.session_state["drift"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch drift report: {e}")
+                _alert("error", f"Cannot fetch drift report: {e}")
 
     d = st.session_state.get("drift")
     if d:
         if "message" in d:
-            st.info(d["message"])
+            _alert("info", d["message"])
         else:
             _label("Feature Drift Analysis")
             n = len(d.get("drifted_features",[]))
@@ -1251,20 +1596,14 @@ with tab_drift:
             with c3: kpi("Drifted",        str(n),                                      _RED if n>0 else _GRN)
             with c4: kpi("Retrain",        "Required" if d.get("retrain_triggered") else "Not needed", _RED if d.get("retrain_triggered") else _GRN)
             if d.get("drifted_features"):
-                st.error(f"Drift detected in: {', '.join(d['drifted_features'])}")
+                _alert("error", f"Drift detected in: {', '.join(d['drifted_features'])}")
                 drift_df = pd.DataFrame(d.get("drift_details",[]))
                 if not drift_df.empty:
                     st.dataframe(drift_df, use_container_width=True)
             else:
-                st.success("All feature distributions are stable — no drift detected.")
+                _alert("success", "All feature distributions are stable — no drift detected.")
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Click <span style="color:{_BLU};font-weight:500;">Drift Report</span> to load data</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("∿", "Check whether live sensor distributions have drifted from training data", "Drift Report")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1272,7 +1611,7 @@ with tab_drift:
 # ═══════════════════════════════════════════════════════════════
 
 with tab_hist:
-    if history_btn:
+    if history_btn or "history" not in st.session_state:
         with st.spinner("Loading history…"):
             try:
                 resp = requests.get(HISTORY_URL, params={"limit":200}, headers=HEADERS, timeout=10)
@@ -1280,13 +1619,13 @@ with tab_hist:
                 st.session_state["history"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch history: {e}")
+                _alert("error", f"Cannot fetch history: {e}")
 
     hist = st.session_state.get("history")
     if hist:
         records = hist.get("records",[])
         if not records:
-            st.info("No prediction records found.")
+            _alert("info", "No prediction records found.")
         else:
             df_h     = pd.DataFrame(records)
             total    = len(df_h)
@@ -1312,13 +1651,7 @@ with tab_hist:
                     if c in df_h.columns]
             st.dataframe(df_h[disp], use_container_width=True, height=300)
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Click <span style="color:{_BLU};font-weight:500;">History</span> to load data</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("◷", "Browse the last 200 predictions across confidence and severity", "History")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1328,7 +1661,7 @@ with tab_hist:
 with tab_anlt:
     hours_sel = st.select_slider("Time window", options=[1,3,6,12,24,48,72,168], value=24, key="an_hrs")
 
-    if analytics_btn:
+    if analytics_btn or "analytics" not in st.session_state:
         with st.spinner("Computing analytics…"):
             try:
                 resp = requests.get(ANALYTICS_URL, params={"hours":hours_sel}, headers=HEADERS, timeout=10)
@@ -1336,7 +1669,7 @@ with tab_anlt:
                 st.session_state["analytics"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch analytics: {e}")
+                _alert("error", f"Cannot fetch analytics: {e}")
 
     an = st.session_state.get("analytics")
     if an:
@@ -1368,13 +1701,7 @@ with tab_anlt:
         if rows:
             st.plotly_chart(_conf_timeline(rows), use_container_width=True, config={"displayModeBar":False}, key="an_timeline")
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Select a window then click <span style="color:{_BLU};font-weight:500;">Analytics</span></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("▤", "Select a time window, then load aggregate trends and failure modes", "Analytics")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1386,7 +1713,7 @@ with tab_alrt:
     with fc1: unack = st.checkbox("Unacknowledged only", value=False, key="unack_f")
     with fc2: ref_btn = st.button("Refresh", use_container_width=True, key="ref_alrt")
 
-    if alerts_btn or ref_btn:
+    if alerts_btn or ref_btn or "alerts" not in st.session_state:
         with st.spinner("Loading alerts…"):
             try:
                 resp = requests.get(
@@ -1398,7 +1725,7 @@ with tab_alrt:
                 st.session_state["alerts"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch alerts: {e}")
+                _alert("error", f"Cannot fetch alerts: {e}")
 
     al = st.session_state.get("alerts")
     if al:
@@ -1407,7 +1734,7 @@ with tab_alrt:
         _label(f"Alert Center — {len(alist)} alerts · {unack_n} unacknowledged")
 
         if not alist:
-            st.success("No alerts match your filter.")
+            _alert("success", "No alerts match your filter.")
         else:
             for alert in alist:
                 sev      = alert.get("severity","NONE")
@@ -1448,20 +1775,14 @@ with tab_alrt:
                                     headers=HEADERS, timeout=5,
                                 )
                                 ar.raise_for_status()
-                                st.success(f"Acknowledged #{alert.get('id')}")
+                                st.toast(f"Acknowledged #{alert.get('id')}", icon="✓")
                                 st.session_state.pop("alerts",None)
                                 st.rerun()
                             except Exception as e:
                                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                                st.error(f"Failed: {e}")
+                                _alert("error", f"Failed: {e}")
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Click <span style="color:{_BLU};font-weight:500;">Alerts</span> to load data</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("◉", "Review and acknowledge severity-flagged prediction alerts", "Alerts")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1502,7 +1823,7 @@ with tab_tmln:
     with eq_col2:
         tmln_refresh = st.button("Load Timeline", use_container_width=True, key="tmln_refresh")
 
-    if timeline_btn or tmln_refresh:
+    if timeline_btn or tmln_refresh or "timeline" not in st.session_state:
         with st.spinner("Loading equipment timeline…"):
             try:
                 resp = requests.get(timeline_url(int(equipment_id_sel)), headers=HEADERS, timeout=10)
@@ -1510,7 +1831,7 @@ with tab_tmln:
                 st.session_state["timeline"] = resp.json()
             except Exception as e:
                 if isinstance(e, requests.exceptions.HTTPError): _on_http_error(e)
-                st.error(f"Cannot fetch equipment timeline: {e}")
+                _alert("error", f"Cannot fetch equipment timeline: {e}")
 
     tl = st.session_state.get("timeline")
     if tl:
@@ -1535,9 +1856,13 @@ with tab_tmln:
                 config={"displayModeBar": False}, key="equipment_timeline_chart",
             )
             if next_maint and next_maint.get("message"):
-                st.caption(next_maint["message"])
+                st.markdown(
+                    f'<div style="font:400 11px/1.5 Inter,sans-serif;color:{_T3};'
+                    f'margin-top:6px;">{next_maint["message"]}</div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.info("No predictions recorded yet for this equipment.")
+            _alert("info", "No predictions recorded yet for this equipment.")
 
         _label("Last Actual Maintenance")
         if last_maint:
@@ -1550,12 +1875,10 @@ with tab_tmln:
                 unsafe_allow_html=True,
             )
         else:
-            st.caption("No resolved maintenance action on record for this equipment yet.")
+            st.markdown(
+                f'<div style="font:400 11px/1.5 Inter,sans-serif;color:{_T3};">'
+                f'No resolved maintenance action on record for this equipment yet.</div>',
+                unsafe_allow_html=True,
+            )
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:60px 0;">'
-            f'<div style="font:400 13px/1 Inter,sans-serif;color:{_T3};">'
-            f'Click <span style="color:{_BLU};font-weight:500;">Load Timeline</span> to view equipment status</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _empty_state("⏣", "Track an asset's health, drift and last maintenance over time", "Load Timeline")

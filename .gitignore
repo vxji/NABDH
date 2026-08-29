@@ -13,6 +13,10 @@ retrain_needed.flag
 # Generated PDF reports (v4.2.0)
 reports/
 
+# SQLite WAL/SHM journal files
+*.db-shm
+*.db-wal
+
 # OS
 .DS_Store
 desktop.ini
